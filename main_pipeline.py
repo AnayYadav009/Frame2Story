@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 from pathlib import Path
-from typing import Dict, Any
+from typing import Callable, Dict, Any
 
 from modules.scene.scene_pipeline import run_scene_pipeline, compute_scene_features
 from modules.dialogue.dialogue_aligner import load_subtitles, align_dialogue_to_scenes, save_scene_dialogues
@@ -60,6 +61,40 @@ def _resolve_reference_text(scene_dialogues: Any, ranked_scene_ids: list[Any]) -
     return _reference_from_scene_dialogues(scene_dialogues, ranked_scene_ids)
 
 
+def _load_json_if_exists(path: Path) -> Any | None:
+    try:
+        if path.exists():
+            with path.open("r", encoding="utf-8") as f:
+                return json.load(f)
+    except (OSError, json.JSONDecodeError, TypeError, ValueError):
+        return None
+    return None
+
+
+def _video_hash(video_path: str, progress: int | float) -> str:
+    h = hashlib.sha256()
+    h.update(str(progress).encode("utf-8"))
+    with open(video_path, "rb") as f:
+        h.update(f.read(2 * 1024 * 1024))
+    return h.hexdigest()[:16]
+
+
+def _cache_valid(path: Path, cache_key: str) -> bool:
+    marker = path.parent / ".cache_key"
+    if not path.exists() or not marker.exists():
+        return False
+
+    try:
+        return marker.read_text(encoding="utf-8").strip() == cache_key
+    except OSError:
+        return False
+
+
+def _write_cache_key(path: Path, cache_key: str) -> None:
+    marker = path.parent / ".cache_key"
+    marker.write_text(cache_key, encoding="utf-8")
+
+
 def run_full_pipeline(
     subtitle_path: str | None,
     video_path: str | None = None,
@@ -67,18 +102,20 @@ def run_full_pipeline(
     scene_gap: float = 5.0,
     summary_style: str = "Concise",
     output_dir: str = "outputs",
+    progress_callback: Callable[[str], None] | None = None,
 ) -> Dict[str, Any]:
     # scene_gap is kept for API compatibility with existing callers.
     _ = scene_gap
+
+    def notify(message: str) -> None:
+        if progress_callback:
+            progress_callback(message)
 
     # If a video_path is provided, extract/compute everything starting from the video.
     # If no video is provided (e.g., user did not upload a file), attempt to run
     # the summarization stage using existing intermediate files in `data/intermediate`.
     intermediate_dir = Path("data/intermediate")
     intermediate_dir.mkdir(parents=True, exist_ok=True)
-
-    if video_path is not None:
-        subtitle_path = get_subtitle(video_path, subtitle_path)
 
     output_root = Path(output_dir)
     scenes_output_dir = output_root / "scenes"
@@ -98,60 +135,136 @@ def run_full_pipeline(
     ranked_ids_path = intermediate_dir / "ranked_scene_ids.json"
 
     if video_path is not None:
-        scenes = run_scene_pipeline(
-            video_path=video_path,
-            progress_percentage=float(percent_progress),
-            output_path=str(scenes_path),
-        )
+        cache_key = _video_hash(video_path, percent_progress)
 
-        scene_features = compute_scene_features(
-            video_path=video_path,
-            scenes_path=str(scenes_path),
-            output_path=str(features_path),
-            keyframes_dir="data/keyframes",
-            save_keyframes=True,
-        )
+        notify("Preparing subtitles...")
+        subtitle_path = get_subtitle(video_path, subtitle_path)
 
-        subs = load_subtitles(subtitle_path)
-        scene_dialogues = align_dialogue_to_scenes(subs, scenes)
-        save_scene_dialogues(scene_dialogues, str(dialogues_path))
+        notify("Detecting scenes...")
+        scenes = None
+        if _cache_valid(scenes_path, cache_key):
+            cached_scenes = _load_json_if_exists(scenes_path)
+            if isinstance(cached_scenes, list):
+                scenes = cached_scenes
+                notify("Detecting scenes... (cached)")
 
-        dialogue_scores = analyze_dialogues(scene_dialogues)
-        save_dialogue_scores(dialogue_scores, str(dialogue_scores_path))
+        if scenes is None:
+            scenes = run_scene_pipeline(
+                video_path=video_path,
+                progress_percentage=float(percent_progress),
+                output_path=str(scenes_path),
+            )
+            _write_cache_key(scenes_path, cache_key)
 
-        # Level-3 multimodal fusion uses dialogue density + motion intensity + object activity.
-        fused_scores = fusion_engine(scene_features, dialogue_scores, visual_data=scene_features)
-        save_fusion_output(fused_scores, str(fused_path))
+        notify("Extracting visual features...")
+        scene_features = None
+        if _cache_valid(features_path, cache_key):
+            cached_features = _load_json_if_exists(features_path)
+            if isinstance(cached_features, (list, dict)):
+                scene_features = cached_features
+                notify("Extracting visual features... (cached)")
 
-        ranked_scenes = get_ranked_scenes(fused_scores, threshold=0.3)
-        ranked_scene_ids = extract_scene_ids(ranked_scenes)
-        save_selected_scenes(ranked_scenes, str(selected_path))
-        save_selected_scenes(ranked_scene_ids, str(ranked_ids_path))
+        if scene_features is None:
+            scene_features = compute_scene_features(
+                video_path=video_path,
+                scenes_path=str(scenes_path),
+                output_path=str(features_path),
+                keyframes_dir="data/keyframes",
+                save_keyframes=True,
+            )
+            _write_cache_key(features_path, cache_key)
+
+        notify("Aligning dialogue...")
+        scene_dialogues = None
+        if _cache_valid(dialogues_path, cache_key):
+            cached_dialogues = _load_json_if_exists(dialogues_path)
+            if isinstance(cached_dialogues, dict):
+                scene_dialogues = cached_dialogues
+                notify("Aligning dialogue... (cached)")
+
+        if scene_dialogues is None:
+            subs = load_subtitles(subtitle_path)
+            scene_dialogues = align_dialogue_to_scenes(subs, scenes)
+            save_scene_dialogues(scene_dialogues, str(dialogues_path))
+            _write_cache_key(dialogues_path, cache_key)
+
+        notify("Scoring and ranking scenes...")
+        ranked_scene_ids = None
+        if _cache_valid(ranked_ids_path, cache_key):
+            cached_ranked_ids = _load_json_if_exists(ranked_ids_path)
+            if isinstance(cached_ranked_ids, list):
+                try:
+                    ranked_scene_ids = [
+                        int(s["scene_id"]) if isinstance(s, dict) else int(s)
+                        for s in cached_ranked_ids
+                    ]
+                    notify("Scoring and ranking scenes... (cached)")
+                except (TypeError, ValueError, KeyError):
+                    ranked_scene_ids = None
+
+        if ranked_scene_ids is None:
+            dialogue_scores = None
+            if _cache_valid(dialogue_scores_path, cache_key):
+                cached_dialogue_scores = _load_json_if_exists(dialogue_scores_path)
+                if isinstance(cached_dialogue_scores, dict):
+                    dialogue_scores = cached_dialogue_scores
+
+            if dialogue_scores is None:
+                dialogue_scores = analyze_dialogues(scene_dialogues)
+                save_dialogue_scores(dialogue_scores, str(dialogue_scores_path))
+                _write_cache_key(dialogue_scores_path, cache_key)
+
+            fused_scores = None
+            if _cache_valid(fused_path, cache_key):
+                cached_fused_scores = _load_json_if_exists(fused_path)
+                if isinstance(cached_fused_scores, list):
+                    fused_scores = cached_fused_scores
+
+            if fused_scores is None:
+                # Level-3 multimodal fusion uses dialogue density + motion intensity + object activity.
+                fused_scores = fusion_engine(scene_features, dialogue_scores, visual_data=scene_features)
+                save_fusion_output(fused_scores, str(fused_path))
+                _write_cache_key(fused_path, cache_key)
+
+            ranked_scenes = get_ranked_scenes(fused_scores, threshold=0.3)
+            ranked_scene_ids = extract_scene_ids(ranked_scenes)
+            save_selected_scenes(ranked_scenes, str(selected_path))
+            save_selected_scenes(ranked_scene_ids, str(ranked_ids_path))
+            _write_cache_key(selected_path, cache_key)
+            _write_cache_key(ranked_ids_path, cache_key)
+
+        # Keep output mirror updated even when ranking stage was served from cache.
         save_selected_scenes(ranked_scene_ids, str(scenes_output_dir / "ranked_scene_ids.json"))
 
-        # Summarize selected scenes only, after ranking.
-        selected_dialogues = {str(scene_id): scene_dialogues.get(str(scene_id), []) for scene_id in ranked_scene_ids}
-        scene_summaries = summarize_all_scenes(
-            selected_dialogues,
-            scene_features=scene_features,
-            summary_style=summary_style,
-        )
-        save_scene_summaries(scene_summaries, str(summaries_path))
+        notify("Summarizing scenes...")
+        scene_summaries = None
+        if _cache_valid(summaries_path, cache_key):
+            cached_summaries = _load_json_if_exists(summaries_path)
+            if isinstance(cached_summaries, dict):
+                scene_summaries = cached_summaries
+                notify("Summarizing scenes... (cached)")
+
+        if scene_summaries is None:
+            selected_dialogues = {
+                str(scene_id): scene_dialogues.get(str(scene_id), [])
+                for scene_id in ranked_scene_ids
+            }
+            scene_summaries = summarize_all_scenes(
+                selected_dialogues,
+                scene_features=scene_features,
+                summary_style=summary_style,
+            )
+            save_scene_summaries(scene_summaries, str(summaries_path))
+            _write_cache_key(summaries_path, cache_key)
+
+        # Keep output mirror updated even when summarization stage was served from cache.
         save_scene_summaries(scene_summaries, str(summaries_output_dir / "scene_summaries.json"))
     else:
-        # No video provided: attempt to load intermediate artifacts and run summarization only.
-        def _load_json_if_exists(p):
-            try:
-                with open(p, 'r', encoding='utf-8') as f:
-                    return json.load(f)
-            except Exception:
-                return None
-
+        # No video provided: load intermediate artifacts and run recap generation.
+        notify("Loading intermediate artifacts...")
         scenes = _load_json_if_exists(scenes_path) or []
         scene_features = _load_json_if_exists(features_path) or {}
         scene_dialogues = _load_json_if_exists(dialogues_path) or {}
-        dialogue_scores = _load_json_if_exists(dialogue_scores_path) or {}
-        fused_scores = _load_json_if_exists(fused_path) or {}
         # ranked_scene_ids and scene_summaries are required for summarization
         ranked_scene_ids = _load_json_if_exists(ranked_ids_path)
         scene_summaries = _load_json_if_exists(summaries_path)
@@ -168,6 +281,7 @@ def run_full_pipeline(
         except Exception:
             ranked_scene_ids = ranked_scene_ids
 
+    notify("Generating final recap...")
     final_recap = build_recap(
         ranked_scene_ids,
         scene_summaries,
@@ -182,6 +296,7 @@ def run_full_pipeline(
     eval_error = None
     reference_text = _resolve_reference_text(scene_dialogues, ranked_scene_ids)
     if reference_text:
+        notify("Evaluating recap quality...")
         eval_output_path = output_root / "eval" / "scores.json"
         try:
             eval_scores = evaluate_recap(
@@ -208,6 +323,7 @@ def run_pipeline(
     progress: int = 70,
     summary_style: str = "Concise",
     output_dir: str = "outputs",
+    progress_callback: Callable[[str], None] | None = None,
 ) -> str:
     """Backward-compatible wrapper used by the Streamlit app and legacy scripts."""
     result = run_full_pipeline(
@@ -216,6 +332,7 @@ def run_pipeline(
         percent_progress=progress,
         summary_style=summary_style,
         output_dir=output_dir,
+        progress_callback=progress_callback,
     )
     return result["final_recap"]
 

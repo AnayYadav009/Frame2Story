@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import importlib
 import re
 from typing import List
 
@@ -9,7 +10,43 @@ from sumy.nlp.tokenizers import Tokenizer
 from sumy.parsers.plaintext import PlaintextParser
 from sumy.summarizers.text_rank import TextRankSummarizer
 
+try:
+    _langdetect = importlib.import_module("langdetect")
+    DetectorFactory = getattr(_langdetect, "DetectorFactory", None)
+    LangDetectException = getattr(_langdetect, "LangDetectException", Exception)
+    detect = getattr(_langdetect, "detect", None)
+
+    if DetectorFactory is not None:
+        DetectorFactory.seed = 0
+    _HAS_LANGDETECT = callable(detect)
+except Exception:
+    LangDetectException = Exception
+    detect = None
+    _HAS_LANGDETECT = False
+
 _SENTENCE_SPLIT = re.compile(r"(?<=[.!?])\s+")
+
+_LANG_CODE_TO_SUMY = {
+    # Common global languages.
+    "en": "english",
+    "es": "spanish",
+    "fr": "french",
+    "de": "german",
+    "it": "italian",
+    "pt": "portuguese",
+
+    # Top Indian languages by usage.
+    # Sumy's tokenizer support for these is limited, so we map them to
+    # a robust tokenizer fallback instead of failing language detection.
+    "hi": "english",  # Hindi
+    "bn": "english",  # Bengali
+    "mr": "english",  # Marathi
+    "te": "english",  # Telugu
+    "ta": "english",  # Tamil
+    "kn": "english",  # Kannada
+    "ml": "english",  # Malayalam
+
+}
 
 
 def _split_sentences(text: str) -> List[str]:
@@ -26,14 +63,55 @@ def select_sentence_count(sentence_count: int) -> int:
     return 5
 
 
-def extractive_summary_from_text(text: str) -> str:
-    """Summarize input text extractively with TextRank."""
+def _to_sumy_language(language: str | None) -> str:
+    if not language:
+        return "english"
+
+    base = language.strip().lower().split("-")[0]
+    return _LANG_CODE_TO_SUMY.get(base, "english")
+
+
+def _detect_sumy_language(text: str) -> str:
+    if not _HAS_LANGDETECT or detect is None:
+        return "english"
+
+    try:
+        detected = detect(text)
+        return _to_sumy_language(detected)
+    except (LangDetectException, ValueError, TypeError):
+        return "english"
+
+
+def _build_tokenizer(language: str) -> Tokenizer:
+    try:
+        return Tokenizer(language)
+    except Exception:
+        return Tokenizer("english")
+
+
+def extractive_summary_from_text(text: str, language: str | None = None) -> str:
+    """Summarize input text extractively with TextRank.
+
+    If `language` is not provided, language is auto-detected from the text.
+    """
     sentences = _split_sentences(text)
     if not sentences:
         return ""
 
     sentence_target = min(select_sentence_count(len(sentences)), len(sentences))
-    parser = PlaintextParser.from_string(" ".join(sentences), Tokenizer("english"))
+    prepared_text = " ".join(sentences)
+
+    sumy_language = _to_sumy_language(language) if language else _detect_sumy_language(prepared_text)
+    parser = PlaintextParser.from_string(prepared_text, _build_tokenizer(sumy_language))
     summarizer = TextRankSummarizer()
-    ranked = summarizer(parser.document, sentence_target)
-    return " ".join(str(sentence).strip() for sentence in ranked if str(sentence).strip())
+
+    try:
+        ranked = summarizer(parser.document, sentence_target)
+        summary = " ".join(str(sentence).strip() for sentence in ranked if str(sentence).strip())
+        if summary:
+            return summary
+    except Exception:
+        pass
+
+    # Deterministic fallback to avoid empty output for unsupported language/tokenizer edge cases.
+    return " ".join(sentences[:sentence_target])

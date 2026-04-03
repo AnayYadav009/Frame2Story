@@ -16,6 +16,7 @@ venv/
 
 # Generated pipeline artifacts
 data/intermediate/
+data/intermediate/.cache_key
 data/keyframes/
 data/audio.wav
 data/generated_subtitles.srt

@@ -3,6 +3,7 @@ torch
 streamlit
 pysrt
 nltk
+langdetect
 sumy
 tqdm
 sentencepiece
