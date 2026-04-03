@@ -24,7 +24,7 @@ def transcribe_audio(audio_path, output_srt = "data/generated_subtitles.srt"):
             text = segment["text"]
             
             f.write(f"{i+1}\n")
-            f.write(f"{format_time(start)} --> {format_time(end)}")
+            f.write(f"{format_time(start)} --> {format_time(end)}\n")
             f.write(f"{text.strip()}\n\n")
             
     return output_srt

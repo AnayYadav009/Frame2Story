@@ -2,27 +2,15 @@ import json
 from pathlib import Path
 import random
 from typing import Any, Dict
-from transformers import AutoConfig, AutoModelForSeq2SeqLM, AutoTokenizer
 import torch
+from modules.summarization.model_cache import get_model_components as get_cached_model_components
 
 MODEL_NAME = "facebook/bart-large-cnn"
-_TOKENIZER = None
-_CONFIG = None
-_MODEL = None
-_DEVICE = None
 
 
 def get_model_components():
     """Load tokenizer/config/model once and reuse across all summarization calls."""
-    global _TOKENIZER, _CONFIG, _MODEL, _DEVICE
-    if _TOKENIZER is None or _CONFIG is None or _MODEL is None or _DEVICE is None:
-        _TOKENIZER = AutoTokenizer.from_pretrained(MODEL_NAME)
-        _CONFIG = AutoConfig.from_pretrained(MODEL_NAME)
-        _MODEL = AutoModelForSeq2SeqLM.from_pretrained(MODEL_NAME)
-        _DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
-        _MODEL.to(_DEVICE)
-        _MODEL.eval()
-    return _TOKENIZER, _CONFIG, _MODEL, _DEVICE
+    return get_cached_model_components(MODEL_NAME)
 
 def load_json(path):
     with open(path, "r") as f:

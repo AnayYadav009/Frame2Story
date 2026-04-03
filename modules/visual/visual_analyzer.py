@@ -74,6 +74,7 @@ def compute_importance_from_features(motion_score, motion_level, objects, durati
 
 def compute_importance(scene, max_duration):
     return compute_importance_from_features(
+        motion_score=scene.get("motion_score_normalized", 0.5),
         motion_level=scene.get("motion", scene.get("motion_level", "MEDIUM")),
         objects=scene.get("objects", []),
         duration=scene.get("duration", scene.get("duration_seconds", 0)),
