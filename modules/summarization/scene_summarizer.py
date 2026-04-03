@@ -54,6 +54,14 @@ def trim_summary(summary, importance, max_sentences=3):
 
     return ". ".join(sentences[:k]).strip() + "."
 
+
+def _max_sentences_for_style(summary_style: str) -> int:
+    style = (summary_style or "").strip().lower()
+    if style == "concise":
+        return 1
+    # Default and "Detailed" both cap at 3.
+    return 3
+
 def _normalize_scene_features(scene_features: Any) -> Dict[str, Dict[str, Any]]:
     if scene_features is None:
         # Prefer current pipeline path first, then legacy/default path.
@@ -79,9 +87,10 @@ def _normalize_scene_features(scene_features: Any) -> Dict[str, Dict[str, Any]]:
     return {}
 
 
-def summarize_all_scenes(scene_dialogues, scene_features=None):
+def summarize_all_scenes(scene_dialogues, scene_features=None, summary_style: str = "Detailed"):
 
     feature_map = _normalize_scene_features(scene_features)
+    max_sentences = _max_sentences_for_style(summary_style)
 
     scene_summaries = {}
 
@@ -96,7 +105,7 @@ def summarize_all_scenes(scene_dialogues, scene_features=None):
         summary = summarize_scene(text)
 
         importance = float(feature_map.get(str(scene_id), {}).get("importance", 0.5))
-        summary = trim_summary(summary, importance)
+        summary = trim_summary(summary, importance, max_sentences=max_sentences)
 
         scene_summaries[scene_id] = summary
 

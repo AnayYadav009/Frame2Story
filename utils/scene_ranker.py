@@ -33,7 +33,10 @@ def save_selected_scenes(data, path):
 
 
 def extract_scene_ids(selected_scenes):
-    return [int(scene["scene_id"]) for scene in selected_scenes]
+    return [
+        int(s["scene_id"]) if isinstance(s, dict) else int(s)
+        for s in selected_scenes
+    ]
 
 
 def main():

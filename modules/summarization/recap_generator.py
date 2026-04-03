@@ -1,6 +1,7 @@
 import json
 from pathlib import Path
 import random
+import re
 from typing import Any, Dict
 import torch
 from modules.summarization.model_cache import get_model_components as get_cached_model_components
@@ -91,6 +92,20 @@ def _normalize_scene_features(scene_features: Any) -> Dict[str, Dict[str, Any]]:
         }
 
     return {}
+
+
+def _max_sentences_for_style(summary_style: str) -> int:
+    style = (summary_style or "").strip().lower()
+    if style == "concise":
+        return 1
+    return 3
+
+
+def _trim_summary_to_sentences(summary: str, max_sentences: int) -> str:
+    parts = [p.strip() for p in re.split(r"[.!?]+", str(summary)) if p and p.strip()]
+    if not parts:
+        return ""
+    return ". ".join(parts[:max_sentences]).strip() + "."
 
 
 def load_scene_features_with_fallback() -> Dict[str, Dict[str, Any]]:
@@ -265,12 +280,19 @@ def select_top_scenes(ranked_scenes, top_percent=0.3):
     k = max(1, int(len(ranked_scenes) * top_percent))
     return ranked_scenes[:k]
 
-def build_recap(ranked_scenes, scene_summaries, scene_features=None):
+def build_recap(ranked_scenes, scene_summaries, scene_features=None, summary_style: str = "Detailed"):
 
     top_scenes = select_top_scenes(ranked_scenes, top_percent=0.3)
     ordered = restore_timeline_order(top_scenes)
 
     summary_map = _normalize_scene_summaries(scene_summaries)
+
+    # Apply style cap here too so precomputed summaries still respect UI style.
+    max_sentences = _max_sentences_for_style(summary_style)
+    summary_map = {
+        scene_id: _trim_summary_to_sentences(summary_text, max_sentences)
+        for scene_id, summary_text in summary_map.items()
+    }
 
     if scene_features is None:
         feature_map = load_scene_features_with_fallback()

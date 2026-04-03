@@ -10,9 +10,54 @@ from modules.dialogue.dialogue_aligner import load_subtitles, align_dialogue_to_
 from modules.dialogue.dialogue_analyzer import analyze_dialogues, save_dialogue_scores
 from modules.summarization.scene_summarizer import summarize_all_scenes, save_scene_summaries
 from modules.summarization.recap_generator import build_recap
+from modules.evaluation.eval import evaluate_recap
 from utils.fusion_engine import fusion_engine, save_fusion_output
 from utils.input_handler import get_subtitle
 from utils.scene_ranker import get_ranked_scenes, extract_scene_ids, save_selected_scenes
+
+
+def _read_text_if_exists(path: Path) -> str | None:
+    try:
+        if path.exists():
+            text = path.read_text(encoding="utf-8").strip()
+            return text or None
+    except OSError:
+        return None
+    return None
+
+
+def _reference_from_scene_dialogues(scene_dialogues: Any, ranked_scene_ids: list[Any]) -> str | None:
+    if not isinstance(scene_dialogues, dict):
+        return None
+
+    lines: list[str] = []
+    for scene_id in ranked_scene_ids:
+        entries = scene_dialogues.get(str(scene_id), scene_dialogues.get(scene_id, []))
+        if isinstance(entries, list):
+            lines.extend(str(entry).strip() for entry in entries if str(entry).strip())
+        elif isinstance(entries, str) and entries.strip():
+            lines.append(entries.strip())
+
+    merged = " ".join(lines).strip()
+    return merged or None
+
+
+def _resolve_reference_text(scene_dialogues: Any, ranked_scene_ids: list[Any]) -> str | None:
+    # Prefer explicit/manual references if present.
+    candidates = [
+        Path("data/reference_summary.txt"),
+        Path("data/reference_recap.txt"),
+        Path("outputs/reference_summary.txt"),
+        Path("outputs/reference_recap.txt"),
+    ]
+
+    for candidate in candidates:
+        text = _read_text_if_exists(candidate)
+        if text:
+            return text
+
+    # Fallback reference: selected raw dialogue.
+    return _reference_from_scene_dialogues(scene_dialogues, ranked_scene_ids)
 
 
 def run_full_pipeline(
@@ -20,6 +65,7 @@ def run_full_pipeline(
     video_path: str | None = None,
     percent_progress: int = 70,
     scene_gap: float = 5.0,
+    summary_style: str = "Concise",
     output_dir: str = "outputs",
 ) -> Dict[str, Any]:
     # scene_gap is kept for API compatibility with existing callers.
@@ -85,7 +131,11 @@ def run_full_pipeline(
 
         # Summarize selected scenes only, after ranking.
         selected_dialogues = {str(scene_id): scene_dialogues.get(str(scene_id), []) for scene_id in ranked_scene_ids}
-        scene_summaries = summarize_all_scenes(selected_dialogues, scene_features=scene_features)
+        scene_summaries = summarize_all_scenes(
+            selected_dialogues,
+            scene_features=scene_features,
+            summary_style=summary_style,
+        )
         save_scene_summaries(scene_summaries, str(summaries_path))
         save_scene_summaries(scene_summaries, str(summaries_output_dir / "scene_summaries.json"))
     else:
@@ -118,16 +168,37 @@ def run_full_pipeline(
         except Exception:
             ranked_scene_ids = ranked_scene_ids
 
-    final_recap = build_recap(ranked_scene_ids, scene_summaries, scene_features=scene_features)
+    final_recap = build_recap(
+        ranked_scene_ids,
+        scene_summaries,
+        scene_features=scene_features,
+        summary_style=summary_style,
+    )
     (final_output_dir / "final_recap.txt").write_text(final_recap, encoding="utf-8")
     with (final_output_dir / "final_recap.json").open("w", encoding="utf-8") as f:
         json.dump({"movie_recap": final_recap}, f, indent=2)
+
+    eval_scores = None
+    eval_error = None
+    reference_text = _resolve_reference_text(scene_dialogues, ranked_scene_ids)
+    if reference_text:
+        eval_output_path = output_root / "eval" / "scores.json"
+        try:
+            eval_scores = evaluate_recap(
+                generated_recap=final_recap,
+                reference_text=reference_text,
+                output_path=str(eval_output_path),
+            )
+        except Exception as exc:
+            eval_error = str(exc)
 
     return {
         "subtitle_path": subtitle_path,
         "scene_count": len(scenes),
         "selected_scene_count": len(ranked_scene_ids),
         "final_recap": final_recap,
+        "evaluation": eval_scores,
+        "evaluation_error": eval_error,
     }
 
 
@@ -135,6 +206,7 @@ def run_pipeline(
     video_path: str | None = None,
     subtitle_path: str | None = None,
     progress: int = 70,
+    summary_style: str = "Concise",
     output_dir: str = "outputs",
 ) -> str:
     """Backward-compatible wrapper used by the Streamlit app and legacy scripts."""
@@ -142,6 +214,7 @@ def run_pipeline(
         subtitle_path=subtitle_path,
         video_path=video_path,
         percent_progress=progress,
+        summary_style=summary_style,
         output_dir=output_dir,
     )
     return result["final_recap"]
@@ -152,6 +225,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--video", default="data/input/sample_video.mp4", help="Path to movie/video file")
     parser.add_argument("--subtitle", default="data/input/sample_himym.srt", help="Path to subtitle .srt file")
     parser.add_argument("--progress", type=int, default=40, help="Watch progress percentage")
+    parser.add_argument("--summary_style", choices=["Concise", "Detailed"], default="Concise", help="Recap summary style")
     parser.add_argument("--output_dir", default="outputs", help="Final output directory")
     return parser
 
@@ -162,6 +236,7 @@ def main() -> None:
         subtitle_path=args.subtitle,
         video_path=args.video,
         percent_progress=args.progress,
+        summary_style=args.summary_style,
         output_dir=args.output_dir,
     )
     print("\nFINAL RECAP:\n")

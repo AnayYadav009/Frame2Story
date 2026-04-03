@@ -1,6 +1,7 @@
 import streamlit as st
 import tempfile
 import json
+import os
 from pathlib import Path
 
 from main_pipeline import run_pipeline
@@ -61,6 +62,7 @@ if generate:
                     video_path=movie_path,
                     subtitle_path=subtitle_path,
                     progress=progress,
+                    summary_style=summary_style,
                 )
             st.session_state.recap_text = (recap or "").strip()
             st.session_state.recap_progress = progress
@@ -68,6 +70,13 @@ if generate:
 
         except Exception as e:
             st.session_state.recap_error = f"Error: {str(e)}"
+        finally:
+            for temp_path in (movie_path, subtitle_path):
+                if temp_path and os.path.exists(temp_path):
+                    try:
+                        os.unlink(temp_path)
+                    except OSError:
+                        pass
 
 if st.session_state.recap_error:
     st.error(st.session_state.recap_error)
