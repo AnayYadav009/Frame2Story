@@ -28,6 +28,7 @@ data/input/*.mkv
 
 # Local backups and archives
 backup/
+backup/**
 
 # Optional local model checkpoints
 *.pt

@@ -71,9 +71,10 @@ def _load_json_if_exists(path: Path) -> Any | None:
     return None
 
 
-def _video_hash(video_path: str, progress: int | float) -> str:
+def _video_hash(video_path: str, progress: int | float, summary_style: str) -> str:
     h = hashlib.sha256()
     h.update(str(progress).encode("utf-8"))
+    h.update(summary_style.encode("utf-8"))
     with open(video_path, "rb") as f:
         h.update(f.read(2 * 1024 * 1024))
     return h.hexdigest()[:16]
@@ -135,7 +136,7 @@ def run_full_pipeline(
     ranked_ids_path = intermediate_dir / "ranked_scene_ids.json"
 
     if video_path is not None:
-        cache_key = _video_hash(video_path, percent_progress)
+        cache_key = _video_hash(video_path, percent_progress, summary_style)
 
         notify("Preparing subtitles...")
         subtitle_path = get_subtitle(video_path, subtitle_path)
