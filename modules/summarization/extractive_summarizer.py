@@ -71,15 +71,22 @@ def _to_sumy_language(language: str | None) -> str:
     return _LANG_CODE_TO_SUMY.get(base, "english")
 
 
-def _detect_sumy_language(text: str) -> str:
+def detect_language(text: str) -> str:
     if not _HAS_LANGDETECT or detect is None:
-        return "english"
+        return "en"
 
     try:
-        detected = detect(text)
-        return _to_sumy_language(detected)
+        detected = detect(text or "")
+        if isinstance(detected, str) and detected.strip():
+            return detected.strip().lower()
     except (LangDetectException, ValueError, TypeError):
-        return "english"
+        pass
+
+    return "en"
+
+
+def _detect_sumy_language(text: str) -> str:
+    return _to_sumy_language(detect_language(text))
 
 
 def _build_tokenizer(language: str) -> Tokenizer:

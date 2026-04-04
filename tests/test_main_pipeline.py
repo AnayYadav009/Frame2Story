@@ -13,9 +13,11 @@ def test_video_hash_changes_with_style_and_progress(tmp_path):
     h1 = mp._video_hash(str(video), 30, "Concise")
     h2 = mp._video_hash(str(video), 30, "Detailed")
     h3 = mp._video_hash(str(video), 40, "Concise")
+    h4 = mp._video_hash(str(video), 30, "Concise", "action")
 
     assert h1 != h2
     assert h1 != h3
+    assert h1 != h4
 
 
 def test_cache_marker_helpers(tmp_path):
@@ -40,15 +42,34 @@ def test_resolve_reference_prefers_manual_file(monkeypatch, tmp_path):
     assert ref == "Manual reference"
 
 
+def test_reference_from_scene_dialogues_supports_structured_entries():
+    scene_dialogues = {
+        "1": [
+            {"speaker": "TED", "line": "Line one."},
+            {"speaker": "MARSHALL", "line": "Line two."},
+        ]
+    }
+
+    ref = mp._reference_from_scene_dialogues(scene_dialogues, [1])
+    assert ref == "Line one. Line two."
+
+
 def test_run_pipeline_wrapper_returns_final_recap(monkeypatch):
+    captured = {}
+
+    def _fake_run_full_pipeline(**kwargs):
+        captured.update(kwargs)
+        return {"final_recap": "WRAPPED"}
+
     monkeypatch.setattr(
         mp,
         "run_full_pipeline",
-        lambda **_kwargs: {"final_recap": "WRAPPED"},
+        _fake_run_full_pipeline,
     )
 
-    result = mp.run_pipeline(video_path="v.mp4", subtitle_path=None)
+    result = mp.run_pipeline(video_path="v.mp4", subtitle_path=None, fusion_preset="action")
     assert result == "WRAPPED"
+    assert captured["fusion_preset"] == "action"
 
 
 def test_run_full_pipeline_no_video_uses_intermediate_files(monkeypatch, tmp_path):
@@ -87,3 +108,9 @@ def test_run_full_pipeline_no_video_raises_when_intermediate_missing(monkeypatch
 
     with pytest.raises(FileNotFoundError):
         mp.run_full_pipeline(subtitle_path=None, video_path=None)
+
+
+def test_arg_parser_accepts_fusion_preset():
+    parser = mp.build_arg_parser()
+    args = parser.parse_args(["--fusion_preset", "documentary"])
+    assert args.fusion_preset == "documentary"

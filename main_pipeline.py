@@ -7,12 +7,22 @@ from pathlib import Path
 from typing import Callable, Dict, Any
 
 from modules.scene.scene_pipeline import run_scene_pipeline, compute_scene_features
-from modules.dialogue.dialogue_aligner import load_subtitles, align_dialogue_to_scenes, save_scene_dialogues
-from modules.dialogue.dialogue_analyzer import analyze_dialogues, save_dialogue_scores
+from modules.dialogue.dialogue_aligner import (
+    load_subtitles,
+    align_dialogue_to_scenes,
+    detect_subtitle_language,
+    save_scene_dialogues,
+)
+from modules.dialogue.dialogue_analyzer import (
+    analyze_dialogues,
+    extract_scene_speakers,
+    save_dialogue_scores,
+    save_scene_speakers,
+)
 from modules.summarization.scene_summarizer import summarize_all_scenes, save_scene_summaries
 from modules.summarization.recap_generator import build_recap
 from modules.evaluation.eval import evaluate_recap
-from utils.fusion_engine import fusion_engine, save_fusion_output
+from utils.fusion_engine import PRESETS, fusion_engine, save_fusion_output
 from utils.input_handler import get_subtitle
 from utils.scene_ranker import get_ranked_scenes, extract_scene_ids, save_selected_scenes
 
@@ -31,11 +41,21 @@ def _reference_from_scene_dialogues(scene_dialogues: Any, ranked_scene_ids: list
     if not isinstance(scene_dialogues, dict):
         return None
 
+    def _entry_text(entry: Any) -> str:
+        if isinstance(entry, dict):
+            line = entry.get("line", "")
+            if isinstance(line, str):
+                return line.strip()
+            return str(line).strip()
+        if isinstance(entry, str):
+            return entry.strip()
+        return str(entry).strip()
+
     lines: list[str] = []
     for scene_id in ranked_scene_ids:
         entries = scene_dialogues.get(str(scene_id), scene_dialogues.get(scene_id, []))
         if isinstance(entries, list):
-            lines.extend(str(entry).strip() for entry in entries if str(entry).strip())
+            lines.extend(line for line in (_entry_text(entry) for entry in entries) if line)
         elif isinstance(entries, str) and entries.strip():
             lines.append(entries.strip())
 
@@ -71,13 +91,26 @@ def _load_json_if_exists(path: Path) -> Any | None:
     return None
 
 
-def _video_hash(video_path: str, progress: int | float, summary_style: str) -> str:
+def _video_hash(
+    video_path: str,
+    progress: int | float,
+    summary_style: str,
+    fusion_preset: str = "auto",
+) -> str:
     h = hashlib.sha256()
     h.update(str(progress).encode("utf-8"))
     h.update(summary_style.encode("utf-8"))
+    h.update(fusion_preset.encode("utf-8"))
     with open(video_path, "rb") as f:
         h.update(f.read(2 * 1024 * 1024))
     return h.hexdigest()[:16]
+
+
+def _resolve_fusion_preset(preset: str) -> tuple[str, Any]:
+    key = (preset or "auto").strip().lower()
+    if key not in PRESETS:
+        key = "auto"
+    return key, PRESETS[key]
 
 
 def _cache_valid(path: Path, cache_key: str) -> bool:
@@ -96,12 +129,21 @@ def _write_cache_key(path: Path, cache_key: str) -> None:
     marker.write_text(cache_key, encoding="utf-8")
 
 
+def _normalize_language(value: Any, fallback: str = "en") -> str:
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized:
+            return normalized
+    return fallback
+
+
 def run_full_pipeline(
     subtitle_path: str | None,
     video_path: str | None = None,
     percent_progress: int = 70,
     scene_gap: float = 5.0,
     summary_style: str = "Concise",
+    fusion_preset: str = "auto",
     output_dir: str = "outputs",
     progress_callback: Callable[[str], None] | None = None,
 ) -> Dict[str, Any]:
@@ -129,14 +171,18 @@ def run_full_pipeline(
     scenes_path = intermediate_dir / "scenes.json"
     features_path = intermediate_dir / "scene_features.json"
     dialogues_path = intermediate_dir / "scene_dialogues.json"
+    language_path = intermediate_dir / "subtitle_language.json"
+    speakers_path = intermediate_dir / "scene_speakers.json"
     dialogue_scores_path = intermediate_dir / "dialogue_scores.json"
     summaries_path = intermediate_dir / "scene_summaries.json"
     fused_path = intermediate_dir / "fused_scores.json"
     selected_path = intermediate_dir / "selected_scenes.json"
     ranked_ids_path = intermediate_dir / "ranked_scene_ids.json"
 
+    resolved_fusion_preset, fusion_weights = _resolve_fusion_preset(fusion_preset)
+
     if video_path is not None:
-        cache_key = _video_hash(video_path, percent_progress, summary_style)
+        cache_key = _video_hash(video_path, percent_progress, summary_style, resolved_fusion_preset)
 
         notify("Preparing subtitles...")
         subtitle_path = get_subtitle(video_path, subtitle_path)
@@ -177,17 +223,43 @@ def run_full_pipeline(
 
         notify("Aligning dialogue...")
         scene_dialogues = None
+        detected_language = "en"
         if _cache_valid(dialogues_path, cache_key):
             cached_dialogues = _load_json_if_exists(dialogues_path)
             if isinstance(cached_dialogues, dict):
                 scene_dialogues = cached_dialogues
                 notify("Aligning dialogue... (cached)")
 
+        if _cache_valid(language_path, cache_key):
+            cached_language_payload = _load_json_if_exists(language_path)
+            if isinstance(cached_language_payload, dict):
+                detected_language = _normalize_language(cached_language_payload.get("language"))
+            elif isinstance(cached_language_payload, str):
+                detected_language = _normalize_language(cached_language_payload)
+
         if scene_dialogues is None:
             subs = load_subtitles(subtitle_path)
-            scene_dialogues = align_dialogue_to_scenes(subs, scenes)
+            scene_dialogues, detected_language = align_dialogue_to_scenes(subs, scenes)
             save_scene_dialogues(scene_dialogues, str(dialogues_path))
             _write_cache_key(dialogues_path, cache_key)
+            with language_path.open("w", encoding="utf-8") as f:
+                json.dump({"language": detected_language}, f, indent=2)
+            _write_cache_key(language_path, cache_key)
+        elif subtitle_path and detected_language == "en" and not language_path.exists():
+            # Backfill language metadata for old caches created before language propagation.
+            try:
+                subs = load_subtitles(subtitle_path)
+                detected_language = detect_subtitle_language(subs)
+            except Exception:
+                detected_language = "en"
+
+            with language_path.open("w", encoding="utf-8") as f:
+                json.dump({"language": detected_language}, f, indent=2)
+            _write_cache_key(language_path, cache_key)
+
+        scene_speakers = extract_scene_speakers(scene_dialogues)
+        save_scene_speakers(scene_speakers, str(speakers_path))
+        _write_cache_key(speakers_path, cache_key)
 
         notify("Scoring and ranking scenes...")
         ranked_scene_ids = None
@@ -223,7 +295,12 @@ def run_full_pipeline(
 
             if fused_scores is None:
                 # Level-3 multimodal fusion uses dialogue density + motion intensity + object activity.
-                fused_scores = fusion_engine(scene_features, dialogue_scores, visual_data=scene_features)
+                fused_scores = fusion_engine(
+                    scene_features,
+                    dialogue_scores,
+                    visual_data=scene_features,
+                    weights=fusion_weights,
+                )
                 save_fusion_output(fused_scores, str(fused_path))
                 _write_cache_key(fused_path, cache_key)
 
@@ -254,6 +331,7 @@ def run_full_pipeline(
                 selected_dialogues,
                 scene_features=scene_features,
                 summary_style=summary_style,
+                language=detected_language,
             )
             save_scene_summaries(scene_summaries, str(summaries_path))
             _write_cache_key(summaries_path, cache_key)
@@ -323,6 +401,7 @@ def run_pipeline(
     subtitle_path: str | None = None,
     progress: int = 70,
     summary_style: str = "Concise",
+    fusion_preset: str = "auto",
     output_dir: str = "outputs",
     progress_callback: Callable[[str], None] | None = None,
 ) -> str:
@@ -332,6 +411,7 @@ def run_pipeline(
         video_path=video_path,
         percent_progress=progress,
         summary_style=summary_style,
+        fusion_preset=fusion_preset,
         output_dir=output_dir,
         progress_callback=progress_callback,
     )
@@ -344,6 +424,12 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--subtitle", default="data/input/sample_himym.srt", help="Path to subtitle .srt file")
     parser.add_argument("--progress", type=int, default=40, help="Watch progress percentage")
     parser.add_argument("--summary_style", choices=["Concise", "Detailed"], default="Concise", help="Recap summary style")
+    parser.add_argument(
+        "--fusion_preset",
+        choices=["auto", "drama", "action", "documentary"],
+        default="auto",
+        help="Fusion weight preset for scene ranking",
+    )
     parser.add_argument("--output_dir", default="outputs", help="Final output directory")
     return parser
 
@@ -355,6 +441,7 @@ def main() -> None:
         video_path=args.video,
         percent_progress=args.progress,
         summary_style=args.summary_style,
+        fusion_preset=args.fusion_preset,
         output_dir=args.output_dir,
     )
     print("\nFINAL RECAP:\n")

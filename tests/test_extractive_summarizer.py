@@ -19,7 +19,15 @@ def test_language_mapping_includes_indian_codes_and_default():
 
 def test_detect_language_falls_back_when_detector_unavailable(monkeypatch):
     monkeypatch.setattr(es, "_HAS_LANGDETECT", False)
+    assert es.detect_language("Hola, como estas?") == "en"
     assert es._detect_sumy_language("Hola, como estas?") == "english"
+
+
+def test_detect_language_returns_detector_result(monkeypatch):
+    monkeypatch.setattr(es, "_HAS_LANGDETECT", True)
+    monkeypatch.setattr(es, "detect", lambda _text: "pt")
+
+    assert es.detect_language("Ola mundo") == "pt"
 
 
 def test_extractive_summary_uses_deterministic_fallback_when_ranker_fails(monkeypatch):

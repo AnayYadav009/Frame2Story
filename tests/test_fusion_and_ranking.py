@@ -20,6 +20,30 @@ def test_fusion_engine_combines_modalities_with_normalization():
     assert fused[1]["final"] == pytest.approx(1.0, abs=1e-4)
 
 
+def test_fusion_weights_validation_and_presets():
+    assert fe.PRESETS["action"].motion == pytest.approx(0.55)
+
+    with pytest.raises(ValueError):
+        fe.FusionWeights(dialogue=0.8, motion=0.2, objects=0.2)
+
+
+def test_fusion_engine_preset_changes_scene_ranking_bias():
+    scene_data = [
+        {"scene_id": 1, "motion_score": 5, "objects": ["person"], "importance": 0.2},
+        {"scene_id": 2, "motion_score": 20, "objects": ["car", "gun", "fire", "crowd"], "importance": 0.9},
+    ]
+    dialogue_scores = {"1": 1.0, "2": 0.2}
+
+    drama = fe.fusion_engine(scene_data, dialogue_scores, visual_data=scene_data, weights=fe.PRESETS["drama"])
+    action = fe.fusion_engine(scene_data, dialogue_scores, visual_data=scene_data, weights=fe.PRESETS["action"])
+
+    drama_scores = {row["scene_id"]: row["final"] for row in drama}
+    action_scores = {row["scene_id"]: row["final"] for row in action}
+
+    assert drama_scores[1] > drama_scores[2]
+    assert action_scores[2] > action_scores[1]
+
+
 def test_get_ranked_scenes_threshold_and_timeline_order():
     scene_data = [
         {"scene_id": 10, "final": 0.9},

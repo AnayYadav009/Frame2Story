@@ -31,6 +31,12 @@ progress = st.slider("Select Watch Progress (%)", 1, 100, 30)
 summary_style = st.selectbox("Summary Style", ["Concise", "Detailed"])
 st.session_state.summary_style = summary_style
 
+genre = st.selectbox(
+    "Film genre (affects scene ranking)",
+    ["Auto", "Drama", "Action", "Documentary"],
+)
+fusion_preset = genre.lower()
+
 # Button
 generate = st.button("Generate Recap")
 
@@ -65,6 +71,7 @@ if generate:
                 subtitle_path=subtitle_path,
                 progress=progress,
                 summary_style=summary_style,
+                fusion_preset=fusion_preset,
                 progress_callback=update_progress,
             )
             status.update(label="Done", state="complete", expanded=False)

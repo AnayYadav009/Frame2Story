@@ -32,3 +32,6 @@ backup/**
 
 # Optional local model checkpoints
 *.pt
+
+# IDE / local Streamlit config
+.streamlit/

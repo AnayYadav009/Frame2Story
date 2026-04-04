@@ -23,6 +23,21 @@ def test_compute_dialogue_score_handles_empty_and_non_empty_text():
     assert 0.0 <= score <= 1.0
 
 
+def test_combine_dialogue_and_speaker_frequency_with_structured_entries():
+    entries = [
+        {"speaker": "TED", "line": "We should go."},
+        {"speaker": "MARSHALL", "line": "Let's wait."},
+        {"speaker": "TED", "line": "No, now!"},
+        "Legacy plain line.",
+    ]
+
+    text = dan.combine_dialogue(entries)
+    speakers = dan.get_scene_speakers(entries)
+
+    assert text == "We should go. Let's wait. No, now! Legacy plain line."
+    assert speakers == ["TED", "MARSHALL"]
+
+
 def test_analyze_dialogues_handles_empty_scene_dialogue_lists():
     scores = dan.analyze_dialogues({"1": ["Hello there."], "2": []})
 

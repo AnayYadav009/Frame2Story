@@ -1,14 +1,43 @@
 import json
 import math
 import re
+from collections import Counter
 
 
 def load_scene_dialogues(path):
     with open(path,"r") as f:
         return json.load(f)
-    
-def combine_dialogue(dialogues):
-    return " ".join(dialogues)
+
+
+def _dialogue_line(entry):
+    if isinstance(entry, dict):
+        line = entry.get("line", "")
+        return line.strip() if isinstance(line, str) else str(line).strip()
+    return str(entry).strip()
+
+
+def combine_dialogue(dialogue_list):
+    return " ".join(
+        line
+        for line in (_dialogue_line(entry) for entry in dialogue_list)
+        if line
+    )
+
+
+def get_scene_speakers(dialogue_list):
+    counts = Counter(
+        entry["speaker"]
+        for entry in dialogue_list
+        if isinstance(entry, dict) and entry.get("speaker")
+    )
+    return [speaker for speaker, _ in counts.most_common(3)]
+
+
+def extract_scene_speakers(scene_dialogues):
+    return {
+        str(scene_id): get_scene_speakers(dialogues if isinstance(dialogues, list) else [])
+        for scene_id, dialogues in scene_dialogues.items()
+    }
 
 def _split_sentences(text):
     parts = re.split(r"[.!?]+", text)
@@ -69,6 +98,12 @@ def analyze_dialogues(scene_dialogues):
 
     return scores
 
+
+def save_scene_speakers(data, path):
+
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(data, f, indent=4, ensure_ascii=False)
+
 def save_dialogue_scores(data, path):
 
     with open(path, "w") as f:
@@ -79,7 +114,9 @@ if __name__ == "__main__":
     scene_dialogues = load_scene_dialogues("data/scene_dialogues.json")
 
     scores = analyze_dialogues(scene_dialogues)
+    speakers = extract_scene_speakers(scene_dialogues)
 
     save_dialogue_scores(scores, "data/dialogue_scores.json")
+    save_scene_speakers(speakers, "data/scene_speakers.json")
 
     print("Dialogue analysis complete.")

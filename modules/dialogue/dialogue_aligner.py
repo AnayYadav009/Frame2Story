@@ -1,5 +1,11 @@
 import json
+import re
 import pysrt
+
+from modules.summarization.extractive_summarizer import detect_language
+
+
+SPEAKER_PATTERN = re.compile(r"^([A-Z][A-Z\s\-']{1,20}):\s*(.+)")
 
 
 def load_scenes(path):
@@ -35,25 +41,52 @@ def time_to_seconds(t):
     )
 
 
+def extract_speaker(text):
+    cleaned = text.replace("\n", " ").strip()
+    match = SPEAKER_PATTERN.match(cleaned)
+    if match:
+        return match.group(1).strip(), match.group(2).strip()
+    return None, cleaned
+
+
 def clean_dialogue(text):
-    return text.replace("\n", " ").strip()
+    _, line = extract_speaker(text)
+    return line
+
+
+def detect_subtitle_language(subs, sample_size=20):
+    sample = " ".join(
+        sub.text.replace("\n", " ").strip()
+        for sub in list(subs)[:sample_size]
+        if getattr(sub, "text", None)
+    )
+    return detect_language(sample)
 
 
 def align_dialogue_to_scenes(subs, scenes):
-    # scene_id -> list of subtitle lines
+    subs_list = list(subs)
+    detected_language = detect_subtitle_language(subs_list)
+
+    # scene_id -> list of structured subtitle entries
     scene_dialogues = {str(scene["scene_id"]): [] for scene in scenes}
 
-    for sub in subs:
+    for sub in subs_list:
         sub_time = time_to_seconds(sub.start)
 
         for scene in scenes:
             # Half-open interval prevents boundary duplicates.
             if scene["start"] <= sub_time < scene["end"]:
                 scene_id = str(scene["scene_id"])
-                scene_dialogues[scene_id].append(clean_dialogue(sub.text))
+                speaker, line = extract_speaker(sub.text)
+                scene_dialogues[scene_id].append(
+                    {
+                        "speaker": speaker,
+                        "line": line,
+                    }
+                )
                 break
 
-    return scene_dialogues
+    return scene_dialogues, detected_language
 
 
 def save_scene_dialogues(data, path):
@@ -64,11 +97,12 @@ def save_scene_dialogues(data, path):
 def main():
     scenes = load_scenes("data/scenes.json")
     subs = load_subtitles("data/sample_himym.srt")
-    scene_dialogues = align_dialogue_to_scenes(subs, scenes)
+    scene_dialogues, language = align_dialogue_to_scenes(subs, scenes)
     save_scene_dialogues(scene_dialogues, "data/scene_dialogues.json")
 
     print("Alignment complete.")
     print("Total scenes:", len(scene_dialogues))
+    print("Detected subtitle language:", language)
 
 
 if __name__ == "__main__":

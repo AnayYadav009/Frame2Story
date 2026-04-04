@@ -1,4 +1,25 @@
 import json
+from dataclasses import dataclass
+
+
+@dataclass(frozen=True)
+class FusionWeights:
+    dialogue: float = 0.45
+    motion: float = 0.35
+    objects: float = 0.20
+
+    def __post_init__(self):
+        total = self.dialogue + self.motion + self.objects
+        if abs(total - 1.0) > 0.01:
+            raise ValueError(f"Fusion weights must sum to 1.0, got {total:.2f}")
+
+
+PRESETS = {
+    "auto": FusionWeights(0.45, 0.35, 0.20),
+    "drama": FusionWeights(0.65, 0.20, 0.15),
+    "action": FusionWeights(0.20, 0.55, 0.25),
+    "documentary": FusionWeights(0.55, 0.25, 0.20),
+}
 
 def load_json(path):
     with open(path, "r") as f:
@@ -11,8 +32,18 @@ def _normalize(value, max_value):
     return max(0.0, min(float(value) / float(max_value), 1.0))
 
 
-def fusion_engine(scene_data, dialogue_data, visual_data=None, w_dialogue=0.45, w_motion=0.35, w_object=0.20):
+def fusion_engine(
+    scene_data,
+    dialogue_data,
+    visual_data=None,
+    w_dialogue=0.45,
+    w_motion=0.35,
+    w_object=0.20,
+    weights: FusionWeights | None = None,
+):
     """Compute multimodal importance using dialogue + motion + object activity."""
+    w = weights or FusionWeights(w_dialogue, w_motion, w_object)
+
     visual_rows = visual_data if visual_data is not None else scene_data
     visual_map = {int(row.get("scene_id", -1)): row for row in visual_rows if isinstance(row, dict)}
 
@@ -35,7 +66,7 @@ def fusion_engine(scene_data, dialogue_data, visual_data=None, w_dialogue=0.45, 
         object_score = _normalize(object_count, max_object_count)
 
         final_score = round(
-            (w_dialogue * dialogue_score) + (w_motion * motion_score) + (w_object * object_score),
+            (w.dialogue * dialogue_score) + (w.motion * motion_score) + (w.objects * object_score),
             4,
         )
 
