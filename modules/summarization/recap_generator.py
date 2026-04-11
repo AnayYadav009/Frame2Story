@@ -6,7 +6,7 @@ from typing import Any, Dict
 import torch
 from modules.summarization.model_cache import get_model_components as get_cached_model_components
 
-MODEL_NAME = "facebook/bart-large-cnn"
+MODEL_NAME = "philschmid/bart-large-cnn-samsum"
 
 
 def get_model_components():
@@ -281,34 +281,28 @@ def select_top_scenes(ranked_scenes, top_percent=0.3):
     return ranked_scenes[:k]
 
 def build_recap(ranked_scenes, scene_summaries, scene_features=None, summary_style: str = "Detailed"):
+    del scene_features  # Kept for API compatibility; one-shot recap no longer uses weighted stitching.
 
     top_scenes = select_top_scenes(ranked_scenes, top_percent=0.3)
     ordered = restore_timeline_order(top_scenes)
-
     summary_map = _normalize_scene_summaries(scene_summaries)
 
-    # Apply style cap here too so precomputed summaries still respect UI style.
-    max_sentences = _max_sentences_for_style(summary_style)
-    summary_map = {
-        scene_id: _trim_summary_to_sentences(summary_text, max_sentences)
-        for scene_id, summary_text in summary_map.items()
-    }
+    ordered_texts = [
+        summary_map[str(scene_id)].strip()
+        for scene_id in ordered
+        if str(scene_id) in summary_map and str(summary_map[str(scene_id)]).strip()
+    ]
 
-    if scene_features is None:
-        feature_map = load_scene_features_with_fallback()
-    else:
-        feature_map = _normalize_scene_features(scene_features)
+    if not ordered_texts:
+        return ""
 
-    combined_text = weighted_combine_summaries(ordered, summary_map, feature_map)
+    combined_text = " ".join(ordered_texts)
 
-    if not combined_text:
-        # Fallback to non-weighted combine if feature map is missing or summaries are sparse.
-        selected = get_selected_summaries(ordered, summary_map)
-        combined_text = combine_summaries(selected)
+    style = (summary_style or "").strip().lower()
+    if style == "concise":
+        return generate_final_recap(combined_text, max_length=140, min_length=45)
 
-    final_recap = hierarchical_summarization(combined_text)
-
-    return final_recap
+    return generate_final_recap(combined_text, max_length=200, min_length=60)
 
 
 def save_recap_outputs(recap_text):

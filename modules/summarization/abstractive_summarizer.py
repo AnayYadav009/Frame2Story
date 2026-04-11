@@ -7,8 +7,7 @@ from typing import Any, Tuple
 import torch
 from modules.summarization.model_cache import get_model_components as get_cached_model_components
 
-
-MODEL_NAME = "facebook/bart-large-cnn"
+MODEL_NAME = "philschmid/bart-large-cnn-samsum"
 
 
 def get_model_components() -> Tuple[Any, Any, Any, str]:

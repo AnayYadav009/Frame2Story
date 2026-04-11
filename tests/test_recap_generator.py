@@ -16,26 +16,52 @@ def test_trim_summary_to_sentences():
     assert rg._trim_summary_to_sentences(summary, 2) == "A1. A2."
 
 
-def test_build_recap_applies_summary_style_cap(monkeypatch):
+def test_build_recap_uses_one_shot_generation(monkeypatch):
+    captured = {}
+
     monkeypatch.setattr(rg, "select_top_scenes", lambda ranked, top_percent=0.3: ranked)
-    monkeypatch.setattr(rg, "hierarchical_summarization", lambda text: text)
 
-    ranked_scenes = [1, 2]
+    def _fake_generate(text, max_length=120, min_length=40):
+        captured["text"] = text
+        captured["max_length"] = max_length
+        captured["min_length"] = min_length
+        return "FINAL"
+
+    monkeypatch.setattr(rg, "generate_final_recap", _fake_generate)
+
+    ranked_scenes = [2, 1]
     scene_summaries = {
-        "1": "S1 first. S1 second.",
-        "2": "S2 first. S2 second.",
-    }
-    scene_features = {
-        "1": {"importance": 0.0},
-        "2": {"importance": 0.0},
+        "1": "S1 story.",
+        "2": "S2 story.",
     }
 
-    concise = rg.build_recap(ranked_scenes, scene_summaries, scene_features=scene_features, summary_style="Concise")
-    assert "S1 first." in concise
-    assert "S1 second." not in concise
+    result = rg.build_recap(ranked_scenes, scene_summaries, summary_style="Detailed")
 
-    detailed = rg.build_recap(ranked_scenes, scene_summaries, scene_features=scene_features, summary_style="Detailed")
-    assert "S1 second." in detailed
+    assert result == "FINAL"
+    assert captured["text"] == "S1 story. S2 story."
+    assert captured["max_length"] == 200
+    assert captured["min_length"] == 60
+
+
+def test_build_recap_concise_uses_shorter_generation_budget(monkeypatch):
+    captured = {}
+
+    monkeypatch.setattr(rg, "select_top_scenes", lambda ranked, top_percent=0.3: ranked)
+
+    def _fake_generate(text, max_length=120, min_length=40):
+        captured["text"] = text
+        captured["max_length"] = max_length
+        captured["min_length"] = min_length
+        return "FINAL"
+
+    monkeypatch.setattr(rg, "generate_final_recap", _fake_generate)
+
+    result = rg.build_recap([1], {"1": "Only scene."}, summary_style="Concise")
+
+    assert result == "FINAL"
+    assert captured["text"] == "Only scene."
+    assert captured["max_length"] == 140
+    assert captured["min_length"] == 45
 
 
 def test_combine_summaries_inserts_connectors():

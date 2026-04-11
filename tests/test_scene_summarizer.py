@@ -82,3 +82,15 @@ def test_summarize_scene_non_english_skips_abstractive(monkeypatch):
 
     summary = ss.summarize_scene("Texto original.", language="es")
     assert summary == "Resumen corto"
+
+
+def test_summarize_scene_english_skips_extractive(monkeypatch):
+    monkeypatch.setattr(
+        ss,
+        "extractive_summary_from_text",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("Should not call extractive for English")),
+    )
+    monkeypatch.setattr(ss, "abstractive_summarize_text", lambda text, **_kwargs: f"ABSTRACT::{text}")
+
+    summary = ss.summarize_scene("Original dialogue.", language="en")
+    assert summary == "ABSTRACT::Original dialogue."

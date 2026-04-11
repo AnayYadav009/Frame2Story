@@ -24,7 +24,7 @@ def load_scene_features(path="output/scene_features.json"):
         return {str(scene_id): scene for scene_id, scene in data.items() if isinstance(scene, dict)}
     return {}
     
-MODEL_NAME = "facebook/bart-large-cnn"
+MODEL_NAME = "philschmid/bart-large-cnn-samsum"
 
 def combine_dialogue(dialogue_list):
     lines = []
@@ -59,14 +59,13 @@ def chunk_text(text, max_words=400):
     return chunks
 
 def summarize_scene(text, language="en"):
-    extractive = extractive_summary_from_text(text, language=language)
-
     base_language = (language or "en").strip().lower().split("-")[0]
     if base_language != "en":
+        extractive = extractive_summary_from_text(text, language=language)
         return extractive or text[:300]
 
-    source_text = extractive if extractive else text
-    return abstractive_summarize_text(source_text, max_length=80, min_length=25)
+    abstractive = abstractive_summarize_text(text, max_length=80, min_length=25)
+    return abstractive or text[:300]
 
 def trim_summary(summary, importance, max_sentences=3):
     sentences = [s.strip() for s in summary.split(".") if s.strip()]
@@ -159,7 +158,7 @@ def main():
     save_scene_summaries(scene_summaries, output_path)
 
     print(f"Model loaded: {MODEL_NAME}")
-    print("Flow: extractive -> abstractive")
+    print("Flow: direct dialogue -> abstractive (English), extractive fallback (non-English)")
     print(f"Scene summaries saved: {output_path}")
     print(f"Scenes summarized: {len(scene_summaries)}")
 
