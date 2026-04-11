@@ -27,6 +27,11 @@ from utils.input_handler import get_subtitle
 from utils.scene_ranker import get_ranked_scenes, extract_scene_ids, save_selected_scenes
 
 
+# Bump this whenever the scene selection or fusion algorithm changes so that
+# cached ranked_scene_ids are automatically invalidated on existing runs.
+_RANKING_VERSION = "v2-adaptive"
+
+
 def _read_text_if_exists(path: Path) -> str | None:
     try:
         if path.exists():
@@ -64,7 +69,6 @@ def _reference_from_scene_dialogues(scene_dialogues: Any, ranked_scene_ids: list
 
 
 def _resolve_reference_text(scene_dialogues: Any, ranked_scene_ids: list[Any]) -> str | None:
-    # Prefer explicit/manual references if present.
     candidates = [
         Path("data/reference_summary.txt"),
         Path("data/reference_recap.txt"),
@@ -77,7 +81,6 @@ def _resolve_reference_text(scene_dialogues: Any, ranked_scene_ids: list[Any]) -
         if text:
             return text
 
-    # Fallback reference: selected raw dialogue.
     return _reference_from_scene_dialogues(scene_dialogues, ranked_scene_ids)
 
 
@@ -101,6 +104,9 @@ def _video_hash(
     h.update(str(progress).encode("utf-8"))
     h.update(summary_style.encode("utf-8"))
     h.update(fusion_preset.encode("utf-8"))
+    # Version stamp ensures cached artifacts are invalidated when the scene
+    # selection or fusion algorithm changes between runs.
+    h.update(_RANKING_VERSION.encode("utf-8"))
     with open(video_path, "rb") as f:
         h.update(f.read(2 * 1024 * 1024))
     return h.hexdigest()[:16]
@@ -113,8 +119,14 @@ def _resolve_fusion_preset(preset: str) -> tuple[str, Any]:
     return key, PRESETS[key]
 
 
+def _cache_marker_path(path: Path) -> Path:
+    # Keep cache keys scoped per artifact so one freshly written file cannot
+    # accidentally validate stale siblings from previous runs.
+    return path.with_suffix(path.suffix + ".cache_key")
+
+
 def _cache_valid(path: Path, cache_key: str) -> bool:
-    marker = path.parent / ".cache_key"
+    marker = _cache_marker_path(path)
     if not path.exists() or not marker.exists():
         return False
 
@@ -125,7 +137,7 @@ def _cache_valid(path: Path, cache_key: str) -> bool:
 
 
 def _write_cache_key(path: Path, cache_key: str) -> None:
-    marker = path.parent / ".cache_key"
+    marker = _cache_marker_path(path)
     marker.write_text(cache_key, encoding="utf-8")
 
 
@@ -147,16 +159,12 @@ def run_full_pipeline(
     output_dir: str = "outputs",
     progress_callback: Callable[[str], None] | None = None,
 ) -> Dict[str, Any]:
-    # scene_gap is kept for API compatibility with existing callers.
     _ = scene_gap
 
     def notify(message: str) -> None:
         if progress_callback:
             progress_callback(message)
 
-    # If a video_path is provided, extract/compute everything starting from the video.
-    # If no video is provided (e.g., user did not upload a file), attempt to run
-    # the summarization stage using existing intermediate files in `data/intermediate`.
     intermediate_dir = Path("data/intermediate")
     intermediate_dir.mkdir(parents=True, exist_ok=True)
 
@@ -246,7 +254,6 @@ def run_full_pipeline(
                 json.dump({"language": detected_language}, f, indent=2)
             _write_cache_key(language_path, cache_key)
         elif subtitle_path and detected_language == "en" and not language_path.exists():
-            # Backfill language metadata for old caches created before language propagation.
             try:
                 subs = load_subtitles(subtitle_path)
                 detected_language = detect_subtitle_language(subs)
@@ -294,7 +301,6 @@ def run_full_pipeline(
                     fused_scores = cached_fused_scores
 
             if fused_scores is None:
-                # Level-3 multimodal fusion uses dialogue density + motion intensity + object activity.
                 fused_scores = fusion_engine(
                     scene_features,
                     dialogue_scores,
@@ -304,14 +310,18 @@ def run_full_pipeline(
                 save_fusion_output(fused_scores, str(fused_path))
                 _write_cache_key(fused_path, cache_key)
 
-            ranked_scenes = get_ranked_scenes(fused_scores, threshold=0.3)
+            watched_duration_sec = max((s.get("end", 0) for s in scenes), default=0) if scenes else 0
+            ranked_scenes = get_ranked_scenes(
+                fused_scores,
+                threshold=0.3,
+                watched_duration_sec=watched_duration_sec,
+            )
             ranked_scene_ids = extract_scene_ids(ranked_scenes)
             save_selected_scenes(ranked_scenes, str(selected_path))
             save_selected_scenes(ranked_scene_ids, str(ranked_ids_path))
             _write_cache_key(selected_path, cache_key)
             _write_cache_key(ranked_ids_path, cache_key)
 
-        # Keep output mirror updated even when ranking stage was served from cache.
         save_selected_scenes(ranked_scene_ids, str(scenes_output_dir / "ranked_scene_ids.json"))
 
         notify("Summarizing scenes...")
@@ -336,15 +346,12 @@ def run_full_pipeline(
             save_scene_summaries(scene_summaries, str(summaries_path))
             _write_cache_key(summaries_path, cache_key)
 
-        # Keep output mirror updated even when summarization stage was served from cache.
         save_scene_summaries(scene_summaries, str(summaries_output_dir / "scene_summaries.json"))
     else:
-        # No video provided: load intermediate artifacts and run recap generation.
         notify("Loading intermediate artifacts...")
         scenes = _load_json_if_exists(scenes_path) or []
         scene_features = _load_json_if_exists(features_path) or {}
         scene_dialogues = _load_json_if_exists(dialogues_path) or {}
-        # ranked_scene_ids and scene_summaries are required for summarization
         ranked_scene_ids = _load_json_if_exists(ranked_ids_path)
         scene_summaries = _load_json_if_exists(summaries_path)
 
@@ -354,7 +361,6 @@ def run_full_pipeline(
                 "Provide a video file to run full pipeline or place the intermediate files in data/intermediate."
             )
 
-        # Normalize to expected types
         try:
             ranked_scene_ids = [int(x) for x in ranked_scene_ids]
         except Exception:

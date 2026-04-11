@@ -13,6 +13,7 @@ def get_model_components():
     """Load tokenizer/config/model once and reuse across all summarization calls."""
     return get_cached_model_components(MODEL_NAME)
 
+
 def load_json(path):
     with open(path, "r") as f:
         return json.load(f)
@@ -84,7 +85,6 @@ def _normalize_scene_features(scene_features: Any) -> Dict[str, Dict[str, Any]]:
         }
 
     if isinstance(scene_features, dict):
-        # Handles both {"1": {...}} and {1: {...}} map formats.
         return {
             str(scene_id): details
             for scene_id, details in scene_features.items()
@@ -126,23 +126,21 @@ def load_scene_features_with_fallback() -> Dict[str, Dict[str, Any]]:
             continue
 
     return {}
-    
+
+
 def get_selected_summaries(ranked_scenes, scene_summaries):
-
     summary_map = _normalize_scene_summaries(scene_summaries)
-
     selected = []
-
     for scene_id in ranked_scenes:
         scene_id_str = str(scene_id)
-
         if scene_id_str in summary_map:
             selected.append(summary_map[scene_id_str])
-
     return selected
+
 
 def restore_timeline_order(scene_ids):
     return sorted(scene_ids)
+
 
 CONNECTORS = [
     "Meanwhile",
@@ -153,6 +151,7 @@ CONNECTORS = [
     "In the next moment"
 ]
 
+
 def combine_summaries(summaries):
     if not summaries:
         return ""
@@ -161,13 +160,13 @@ def combine_summaries(summaries):
 
     for i in range(1, len(summaries)):
         connector = CONNECTORS[i % len(CONNECTORS)]
-
         next_summary = summaries[i].strip()
         if not combined.endswith((".", "!", "?")):
             combined += "."
         combined += f" {connector}, {next_summary}"
 
     return combined
+
 
 def weighted_combine_summaries(scene_ids, scene_summaries, scene_features):
     combined = []
@@ -179,7 +178,6 @@ def weighted_combine_summaries(scene_ids, scene_summaries, scene_features):
 
         importance = float(scene_features.get(str(scene_id), {}).get("importance", 0.5))
 
-        # Weighting logic
         if importance > 0.75:
             weight = 3
         elif importance > 0.5:
@@ -191,17 +189,16 @@ def weighted_combine_summaries(scene_ids, scene_summaries, scene_features):
 
     return combine_summaries(combined)
 
-def chunk_text(text, chunk_size=400):
 
+def chunk_text(text, chunk_size=400):
     if not text or not text.strip():
         return []
 
     words = text.split()
-
     chunks = []
 
     for i in range(0, len(words), chunk_size):
-        chunks.append(" ".join(words[i:i+chunk_size]))
+        chunks.append(" ".join(words[i:i + chunk_size]))
 
     return chunks
 
@@ -253,56 +250,101 @@ def generate_final_recap(text, max_length=120, min_length=40):
 
     return tokenizer.decode(output_ids[0], skip_special_tokens=True).strip()
 
-def hierarchical_summarization(text):
 
+def hierarchical_summarization(text, max_length=200, min_length=60):
+    """Summarize long text via chunk → summarize → merge → summarize.
+
+    Each chunk is independently summarized at a shorter budget, then the
+    chunk summaries are merged and passed through a final summarization pass
+    at the caller-supplied budget.  This preserves detail from all parts of
+    the input that a single-shot pass would compress away.
+
+    Args:
+        text: Combined scene summary text to condense.
+        max_length: Token budget for the final merged summary.
+        min_length: Minimum token length for the final merged summary.
+    """
     if not text or not text.strip():
         return ""
 
     chunks = chunk_text(text)
-
     summaries = []
 
     for chunk in chunks:
-        summary = generate_final_recap(chunk)
+        # Summarize each chunk at a tighter budget so intermediate outputs
+        # remain digestible when merged for the final pass.
+        summary = generate_final_recap(chunk, max_length=120, min_length=30)
         if summary:
             summaries.append(summary)
 
     if not summaries:
         return ""
     if len(summaries) == 1:
-        return summaries[0]
+        # Single chunk: run one more pass to hit the requested budget
+        return generate_final_recap(summaries[0], max_length=max_length, min_length=min_length)
 
     combined = " ".join(summaries)
+    return generate_final_recap(combined, max_length=max_length, min_length=min_length)
 
-    return generate_final_recap(combined)
 
 def select_top_scenes(ranked_scenes, top_percent=0.3):
     k = max(1, int(len(ranked_scenes) * top_percent))
     return ranked_scenes[:k]
 
+
 def build_recap(ranked_scenes, scene_summaries, scene_features=None, summary_style: str = "Detailed"):
-    del scene_features  # Kept for API compatibility; one-shot recap no longer uses weighted stitching.
+    """Assemble a final recap from ranked scene summaries.
 
-    top_scenes = select_top_scenes(ranked_scenes, top_percent=0.3)
-    ordered = restore_timeline_order(top_scenes)
+    Changes vs. previous version:
+    - scene_features is now used: per-scene importance scales the sentence
+      budget allocated to each scene in the combined input text.
+    - select_top_scenes pre-filter removed: adaptive selection upstream
+      already produces the right scene count; double-filtering discards
+      scenes that were deliberately included.
+    - Hierarchical summarization is used automatically when the combined
+      input exceeds 500 words to avoid losing detail on long videos.
+    """
+    ordered = restore_timeline_order(ranked_scenes)
     summary_map = _normalize_scene_summaries(scene_summaries)
+    feature_map = (
+        _normalize_scene_features(scene_features)
+        if scene_features is not None
+        else load_scene_features_with_fallback()
+    )
 
-    ordered_texts = [
-        summary_map[str(scene_id)].strip()
-        for scene_id in ordered
-        if str(scene_id) in summary_map and str(summary_map[str(scene_id)]).strip()
-    ]
+    style = (summary_style or "").strip().lower()
+    max_sentences = _max_sentences_for_style(summary_style)
+
+    ordered_texts = []
+    for scene_id in ordered:
+        key = str(scene_id)
+        if key not in summary_map or not summary_map[key].strip():
+            continue
+        summary = summary_map[key].strip()
+
+        # Scale sentence budget by importance: low-importance scenes get 1
+        # sentence, high-importance scenes get up to max_sentences
+        importance = float(feature_map.get(key, {}).get("importance", 0.5))
+        k = max(1, round(importance * max_sentences))
+        ordered_texts.append(_trim_summary_to_sentences(summary, k))
 
     if not ordered_texts:
         return ""
 
     combined_text = " ".join(ordered_texts)
+    word_count = len(combined_text.split())
 
-    style = (summary_style or "").strip().lower()
     if style == "concise":
-        return generate_final_recap(combined_text, max_length=140, min_length=45)
+        max_len, min_len = 140, 45
+    else:
+        max_len, min_len = 200, 60
 
-    return generate_final_recap(combined_text, max_length=200, min_length=60)
+    # Switch to hierarchical summarization for long combined inputs so that
+    # detail from every scene reaches the final output.
+    if word_count > 500:
+        return hierarchical_summarization(combined_text, max_length=max_len, min_length=min_len)
+
+    return generate_final_recap(combined_text, max_length=max_len, min_length=min_len)
 
 
 def save_recap_outputs(recap_text):

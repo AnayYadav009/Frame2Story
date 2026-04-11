@@ -31,6 +31,20 @@ def test_cache_marker_helpers(tmp_path):
     assert mp._cache_valid(payload, "wrong") is False
 
 
+def test_cache_markers_are_scoped_per_artifact(tmp_path):
+    scenes = tmp_path / "data" / "intermediate" / "scenes.json"
+    features = tmp_path / "data" / "intermediate" / "scene_features.json"
+    scenes.parent.mkdir(parents=True, exist_ok=True)
+
+    scenes.write_text("[]", encoding="utf-8")
+    features.write_text("[]", encoding="utf-8")
+
+    mp._write_cache_key(scenes, "new-video-key")
+
+    assert mp._cache_valid(scenes, "new-video-key") is True
+    assert mp._cache_valid(features, "new-video-key") is False
+
+
 def test_resolve_reference_prefers_manual_file(monkeypatch, tmp_path):
     monkeypatch.chdir(tmp_path)
 
