@@ -26,9 +26,6 @@ from utils.fusion_engine import PRESETS, fusion_engine, save_fusion_output
 from utils.input_handler import get_subtitle
 from utils.scene_ranker import get_ranked_scenes, extract_scene_ids, save_selected_scenes
 
-
-# Bump this whenever the scene selection or fusion algorithm changes so that
-# cached ranked_scene_ids are automatically invalidated on existing runs.
 _RANKING_VERSION = "v2-adaptive"
 
 
@@ -120,8 +117,6 @@ def _resolve_fusion_preset(preset: str) -> tuple[str, Any]:
 
 
 def _cache_marker_path(path: Path) -> Path:
-    # Keep cache keys scoped per artifact so one freshly written file cannot
-    # accidentally validate stale siblings from previous runs.
     return path.with_suffix(path.suffix + ".cache_key")
 
 
@@ -186,6 +181,7 @@ def run_full_pipeline(
     fused_path = intermediate_dir / "fused_scores.json"
     selected_path = intermediate_dir / "selected_scenes.json"
     ranked_ids_path = intermediate_dir / "ranked_scene_ids.json"
+    rationale_path = intermediate_dir / "scene_rationale.json"
 
     resolved_fusion_preset, fusion_weights = _resolve_fusion_preset(fusion_preset)
 
@@ -270,6 +266,7 @@ def run_full_pipeline(
 
         notify("Scoring and ranking scenes...")
         ranked_scene_ids = None
+        fused_scores = None  # initialised here so rationale block can read it on cache-hit runs
         if _cache_valid(ranked_ids_path, cache_key):
             cached_ranked_ids = _load_json_if_exists(ranked_ids_path)
             if isinstance(cached_ranked_ids, list):
@@ -321,6 +318,25 @@ def run_full_pipeline(
             save_selected_scenes(ranked_scene_ids, str(ranked_ids_path))
             _write_cache_key(selected_path, cache_key)
             _write_cache_key(ranked_ids_path, cache_key)
+
+        if not _cache_valid(rationale_path, cache_key):
+            fused_for_rationale = fused_scores or (_load_json_if_exists(fused_path) or [])
+            if fused_for_rationale:
+                selected_id_set = set(ranked_scene_ids)
+                rationale = [
+                    {
+                        "scene_id": scene["scene_id"],
+                        "selected": scene["scene_id"] in selected_id_set,
+                        "final_score": scene["final"],
+                        "dialogue_score": scene["dialogue_score"],
+                        "motion_score": scene["motion_score"],
+                        "object_score": scene["object_score"],
+                    }
+                    for scene in fused_for_rationale
+                ]
+                with rationale_path.open("w", encoding="utf-8") as f:
+                    json.dump(rationale, f, indent=2)
+                _write_cache_key(rationale_path, cache_key)
 
         save_selected_scenes(ranked_scene_ids, str(scenes_output_dir / "ranked_scene_ids.json"))
 

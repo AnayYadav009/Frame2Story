@@ -1,6 +1,5 @@
 import json
 from pathlib import Path
-import random
 import re
 from typing import Any, Dict
 import torch
@@ -10,7 +9,6 @@ MODEL_NAME = "philschmid/bart-large-cnn-samsum"
 
 
 def get_model_components():
-    """Load tokenizer/config/model once and reuse across all summarization calls."""
     return get_cached_model_components(MODEL_NAME)
 
 
@@ -168,29 +166,18 @@ def combine_summaries(summaries):
     return combined
 
 
-def weighted_combine_summaries(scene_ids, scene_summaries, scene_features):
-    combined = []
+def select_top_scenes(ranked_scenes, top_percent=0.3):
+    """Kept for backward compatibility with existing callers and tests.
 
-    for scene_id in scene_ids:
-        summary = scene_summaries.get(str(scene_id), "")
-        if not summary:
-            continue
-
-        importance = float(scene_features.get(str(scene_id), {}).get("importance", 0.5))
-
-        if importance > 0.75:
-            weight = 3
-        elif importance > 0.5:
-            weight = 2
-        else:
-            weight = 1
-
-        combined.extend([summary] * weight)
-
-    return combine_summaries(combined)
+    The pre-filter is no longer applied inside build_recap — adaptive
+    selection upstream already produces the right scene count, and
+    double-filtering discards scenes that were deliberately included.
+    """
+    k = max(1, int(len(ranked_scenes) * top_percent))
+    return ranked_scenes[:k]
 
 
-def chunk_text(text, chunk_size=400):
+def chunk_text(text, chunk_size=500):
     if not text or not text.strip():
         return []
 
@@ -252,18 +239,7 @@ def generate_final_recap(text, max_length=120, min_length=40):
 
 
 def hierarchical_summarization(text, max_length=200, min_length=60):
-    """Summarize long text via chunk → summarize → merge → summarize.
-
-    Each chunk is independently summarized at a shorter budget, then the
-    chunk summaries are merged and passed through a final summarization pass
-    at the caller-supplied budget.  This preserves detail from all parts of
-    the input that a single-shot pass would compress away.
-
-    Args:
-        text: Combined scene summary text to condense.
-        max_length: Token budget for the final merged summary.
-        min_length: Minimum token length for the final merged summary.
-    """
+    """Summarize long text via chunk -> summarize -> merge -> summarize."""
     if not text or not text.strip():
         return ""
 
@@ -271,38 +247,26 @@ def hierarchical_summarization(text, max_length=200, min_length=60):
     summaries = []
 
     for chunk in chunks:
-        # Summarize each chunk at a tighter budget so intermediate outputs
-        # remain digestible when merged for the final pass.
-        summary = generate_final_recap(chunk, max_length=120, min_length=30)
+        summary = generate_final_recap(chunk, max_length=160, min_length=40)
         if summary:
             summaries.append(summary)
 
     if not summaries:
         return ""
     if len(summaries) == 1:
-        # Single chunk: run one more pass to hit the requested budget
         return generate_final_recap(summaries[0], max_length=max_length, min_length=min_length)
 
     combined = " ".join(summaries)
     return generate_final_recap(combined, max_length=max_length, min_length=min_length)
 
 
-def select_top_scenes(ranked_scenes, top_percent=0.3):
-    k = max(1, int(len(ranked_scenes) * top_percent))
-    return ranked_scenes[:k]
-
-
 def build_recap(ranked_scenes, scene_summaries, scene_features=None, summary_style: str = "Detailed"):
     """Assemble a final recap from ranked scene summaries.
 
-    Changes vs. previous version:
-    - scene_features is now used: per-scene importance scales the sentence
-      budget allocated to each scene in the combined input text.
-    - select_top_scenes pre-filter removed: adaptive selection upstream
-      already produces the right scene count; double-filtering discards
-      scenes that were deliberately included.
-    - Hierarchical summarization is used automatically when the combined
-      input exceeds 500 words to avoid losing detail on long videos.
+    select_top_scenes pre-filter removed — adaptive selection upstream
+    already produces the right scene count. Hierarchical summarization
+    triggers at 900 words (up from 500) to avoid double-compression on
+    full-episode inputs. Token budgets increased for Detailed style.
     """
     ordered = restore_timeline_order(ranked_scenes)
     summary_map = _normalize_scene_summaries(scene_summaries)
@@ -322,8 +286,6 @@ def build_recap(ranked_scenes, scene_summaries, scene_features=None, summary_sty
             continue
         summary = summary_map[key].strip()
 
-        # Scale sentence budget by importance: low-importance scenes get 1
-        # sentence, high-importance scenes get up to max_sentences
         importance = float(feature_map.get(key, {}).get("importance", 0.5))
         k = max(1, round(importance * max_sentences))
         ordered_texts.append(_trim_summary_to_sentences(summary, k))
@@ -335,13 +297,11 @@ def build_recap(ranked_scenes, scene_summaries, scene_features=None, summary_sty
     word_count = len(combined_text.split())
 
     if style == "concise":
-        max_len, min_len = 140, 45
+        max_len, min_len = 160, 50
     else:
-        max_len, min_len = 200, 60
+        max_len, min_len = 350, 100
 
-    # Switch to hierarchical summarization for long combined inputs so that
-    # detail from every scene reaches the final output.
-    if word_count > 500:
+    if word_count > 900:
         return hierarchical_summarization(combined_text, max_length=max_len, min_length=min_len)
 
     return generate_final_recap(combined_text, max_length=max_len, min_length=min_len)

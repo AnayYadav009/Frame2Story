@@ -1,10 +1,13 @@
 import json
+import re
 from pathlib import Path
 from typing import Any, Dict
 
 from modules.dialogue.dialogue_analyzer import get_scene_speakers
 from modules.summarization.extractive_summarizer import extractive_summary_from_text
 from modules.summarization.abstractive_summarizer import summarize_text as abstractive_summarize_text
+
+MIN_DIALOGUE_WORDS = 25
 
 
 def load_scene_dialogues(path):
@@ -45,23 +48,26 @@ def combine_dialogue(dialogue_list):
 
 
 def build_scene_prompt(text, speakers):
-    """Prepend speaker list to dialogue text (unchanged — used by existing tests)."""
+    """Prepend speaker list and a grounding instruction to dialogue text.
+
+    The instruction prefix reduces BART's tendency to hallucinate details
+    from its pre-training when the dialogue is ambiguous or contains names
+    of entities the model recognises from training data.
+    """
+    prefix = "Summarize only what is said: "
     if speakers:
-        speaker_context = "Characters in this scene: " + ", ".join(speakers) + ". "
-        return speaker_context + text
-    return text
+        speaker_context = "Characters: " + ", ".join(speakers) + ". "
+        return prefix + speaker_context + text
+    return prefix + text
 
 
 def build_scene_context(scene_id, feature_map):
-    """Build a structured visual-context prefix from scene features.
+    """Build a compact visual-context string from scene features.
 
-    Prepends compact metadata (time span, motion level, notable objects) so
-    the summarizer has richer grounding beyond raw dialogue text.  Speakers
-    are intentionally excluded here — they are handled by build_scene_prompt
-    to preserve backward-compatibility with existing callers and tests.
-
-    Returns an empty string when no informative features are available so the
-    prompt degrades gracefully to the plain dialogue text.
+    For use in scene_rationale.json and Streamlit UI display only.
+    Never pass this to any summarization model — BART paraphrases
+    metadata tokens into natural language garbage such as
+    "The scene is in time 207s" or "There is high motion going on scene".
     """
     feature = feature_map.get(str(scene_id), {})
     parts = []
@@ -75,27 +81,34 @@ def build_scene_context(scene_id, feature_map):
     if motion:
         parts.append(f"{motion.title()} motion")
 
-    # Skip generic 'person' label — it adds noise rather than signal
     objects = [o for o in (feature.get("objects") or []) if o.lower() != "person"][:3]
     if objects:
         parts.append(f"Objects: {', '.join(objects)}")
 
     if not parts:
         return ""
-    return "[Scene: " + "; ".join(parts) + "] "
+    return "; ".join(parts)
 
 
-def chunk_text(text, max_words=400):
-    words = text.split()
-    chunks = []
-    for i in range(0, len(words), max_words):
-        chunk = " ".join(words[i:i + max_words])
-        chunks.append(chunk)
-    return chunks
+def _first_n_sentences(text, n=2):
+    """Return the first n sentences of raw dialogue as a fallback summary."""
+    sentences = [s.strip() for s in re.split(r"[.!?]+", text) if s.strip()]
+    if not sentences:
+        return text[:200].strip()
+    return ". ".join(sentences[:n]).strip() + "."
 
 
 def summarize_scene(text, language="en"):
+    """Summarize a single scene's dialogue text.
+
+    Receives the fully-built prompt string (with instruction prefix and
+    speaker context already prepended). The short-dialogue bypass lives in
+    summarize_all_scenes and operates on raw dialogue text BEFORE the
+    prompt is constructed — this function always receives text that has
+    already passed the MIN_DIALOGUE_WORDS gate.
+    """
     base_language = (language or "en").strip().lower().split("-")[0]
+
     if base_language != "en":
         extractive = extractive_summary_from_text(text, language=language)
         return extractive or text[:300]
@@ -105,11 +118,11 @@ def summarize_scene(text, language="en"):
 
 
 def trim_summary(summary, importance, max_sentences=3):
-    sentences = [s.strip() for s in summary.split(".") if s.strip()]
+    sentences = [s.strip() for s in re.split(r"[.!?]+", summary) if s.strip()]
     if not sentences:
         return ""
 
-    # Scale importance (0–1 → 1–max_sentences)
+    # Scale importance (0-1 -> 1-max_sentences)
     k = max(1, min(max_sentences, int(round(importance * max_sentences))))
 
     return ". ".join(sentences[:k]).strip() + "."
@@ -166,19 +179,18 @@ def summarize_all_scenes(
         speakers = get_scene_speakers(dialogue_list if isinstance(dialogue_list, list) else [])
         text = combine_dialogue(dialogue_list)
 
-        # Layer 1: compact visual context (time, motion, objects)
-        visual_prefix = build_scene_context(scene_id, feature_map)
-        # Layer 2: speaker list + dialogue text (keeps existing test contract)
-        prompt_text = visual_prefix + build_scene_prompt(text, speakers)
+        if len(text.split()) < MIN_DIALOGUE_WORDS:
+            summary = _first_n_sentences(text, n=2)
+            importance = float(feature_map.get(str(scene_id), {}).get("importance", 0.5))
+            scene_summaries[scene_id] = trim_summary(summary, importance, max_sentences=max_sentences)
+            continue
 
+        prompt_text = build_scene_prompt(text, speakers)
         summary = summarize_scene(prompt_text, language=language)
 
-        # Minimum quality gate: only replace if the summarizer returned nothing
-        # useful (empty string or pure whitespace). Valid concise outputs like
-        # "Alpha." must not be overridden — that was the regression caught by
-        # test_scene_summarizer.py.
+        # Quality gate: only replace if the model returned nothing useful.
         if not summary.strip() and text:
-            summary = text[:300].strip()
+            summary = _first_n_sentences(text, n=2)
 
         importance = float(feature_map.get(str(scene_id), {}).get("importance", 0.5))
         summary = trim_summary(summary, importance, max_sentences=max_sentences)
