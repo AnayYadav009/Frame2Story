@@ -1,13 +1,13 @@
 import json
 import re
 from pathlib import Path
-from typing import Any, Dict
+from typing import Any, Dict, List
 
 from modules.dialogue.dialogue_analyzer import get_scene_speakers
 from modules.summarization.extractive_summarizer import extractive_summary_from_text
 from modules.summarization.abstractive_summarizer import summarize_text as abstractive_summarize_text
 
-MIN_DIALOGUE_WORDS = 25
+MIN_DIALOGUE_WORDS = 8
 
 
 def load_scene_dialogues(path):
@@ -47,18 +47,47 @@ def combine_dialogue(dialogue_list):
     return " ".join(lines)
 
 
-def build_scene_prompt(text, speakers):
-    """Prepend speaker list and a grounding instruction to dialogue text.
+def format_as_sasum_dialogue(dialogue_list: List) -> str:
+    """Format dialogue in SAMSum training format: 'Speaker: line\\n'.
 
-    The instruction prefix reduces BART's tendency to hallucinate details
-    from its pre-training when the dialogue is ambiguous or contains names
-    of entities the model recognises from training data.
+    philschmid/bart-large-cnn-samsum was fine-tuned on the SAMSum dataset
+    whose conversations look like:
+        Amanda: I baked cookies. Do you want some?
+        Jerry: Sure!
+    Passing text in this exact format gives the model the distribution it
+    was trained on, reducing hallucination compared to flat paragraph input
+    or custom instruction prefixes.
     """
-    prefix = "Summarize only what is said: "
+    lines = []
+    for entry in dialogue_list:
+        if isinstance(entry, dict):
+            speaker = (entry.get("speaker") or "").strip()
+            line = str(entry.get("line", "")).strip()
+        else:
+            speaker = ""
+            line = str(entry).strip()
+
+        if not line:
+            continue
+
+        if speaker:
+            lines.append(f"{speaker}: {line}")
+        else:
+            lines.append(line)
+
+    return "\n".join(lines)
+
+
+def build_scene_prompt(text, speakers):
+    """Prepend speaker list to dialogue text.
+
+    Used for the flat-text path (non-SAMSum). Kept for backward compatibility
+    with existing callers and tests.
+    """
     if speakers:
-        speaker_context = "Characters: " + ", ".join(speakers) + ". "
-        return prefix + speaker_context + text
-    return prefix + text
+        speaker_context = "Characters in this scene: " + ", ".join(speakers) + ". "
+        return speaker_context + text
+    return text
 
 
 def build_scene_context(scene_id, feature_map):
@@ -99,13 +128,10 @@ def _first_n_sentences(text, n=2):
 
 
 def summarize_scene(text, language="en"):
-    """Summarize a single scene's dialogue text.
+    """Summarize a single scene's formatted dialogue text.
 
-    Receives the fully-built prompt string (with instruction prefix and
-    speaker context already prepended). The short-dialogue bypass lives in
-    summarize_all_scenes and operates on raw dialogue text BEFORE the
-    prompt is constructed — this function always receives text that has
-    already passed the MIN_DIALOGUE_WORDS gate.
+    Expects text already formatted for the model (SAMSum format for English,
+    plain combined text for non-English extractive path).
     """
     base_language = (language or "en").strip().lower().split("-")[0]
 
@@ -122,9 +148,7 @@ def trim_summary(summary, importance, max_sentences=3):
     if not sentences:
         return ""
 
-    # Scale importance (0-1 -> 1-max_sentences)
     k = max(1, min(max_sentences, int(round(importance * max_sentences))))
-
     return ". ".join(sentences[:k]).strip() + "."
 
 
@@ -167,6 +191,7 @@ def summarize_all_scenes(
 ):
     feature_map = _normalize_scene_features(scene_features)
     max_sentences = _max_sentences_for_style(summary_style)
+    base_language = (language or "en").strip().lower().split("-")[0]
 
     scene_summaries = {}
 
@@ -176,21 +201,23 @@ def summarize_all_scenes(
             scene_summaries[scene_id] = ""
             continue
 
-        speakers = get_scene_speakers(dialogue_list if isinstance(dialogue_list, list) else [])
-        text = combine_dialogue(dialogue_list)
+        raw_text = combine_dialogue(dialogue_list)
 
-        if len(text.split()) < MIN_DIALOGUE_WORDS:
-            summary = _first_n_sentences(text, n=2)
+        if len(raw_text.split()) < MIN_DIALOGUE_WORDS:
+            summary = _first_n_sentences(raw_text, n=2)
             importance = float(feature_map.get(str(scene_id), {}).get("importance", 0.5))
             scene_summaries[scene_id] = trim_summary(summary, importance, max_sentences=max_sentences)
             continue
 
-        prompt_text = build_scene_prompt(text, speakers)
-        summary = summarize_scene(prompt_text, language=language)
+        if base_language == "en":
+            formatted_text = format_as_sasum_dialogue(dialogue_list)
+        else:
+            formatted_text = raw_text
 
-        # Quality gate: only replace if the model returned nothing useful.
-        if not summary.strip() and text:
-            summary = _first_n_sentences(text, n=2)
+        summary = summarize_scene(formatted_text, language=language)
+
+        if not summary.strip() and raw_text:
+            summary = _first_n_sentences(raw_text, n=2)
 
         importance = float(feature_map.get(str(scene_id), {}).get("importance", 0.5))
         summary = trim_summary(summary, importance, max_sentences=max_sentences)
@@ -216,7 +243,7 @@ def main():
     save_scene_summaries(scene_summaries, output_path)
 
     print(f"Model loaded: {MODEL_NAME}")
-    print("Flow: direct dialogue -> abstractive (English), extractive fallback (non-English)")
+    print("Flow: SAMSum-formatted dialogue -> abstractive (English), extractive (non-English)")
     print(f"Scene summaries saved: {output_path}")
     print(f"Scenes summarized: {len(scene_summaries)}")
 

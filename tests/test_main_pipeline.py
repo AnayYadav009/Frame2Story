@@ -82,7 +82,9 @@ def test_run_pipeline_wrapper_returns_final_recap(monkeypatch):
     )
 
     result = mp.run_pipeline(video_path="v.mp4", subtitle_path=None, fusion_preset="action")
-    assert result == "WRAPPED"
+    assert isinstance(result, dict)
+    assert result["final_recap"] == "WRAPPED"
+    assert result["recap"] == "WRAPPED"
     assert captured["fusion_preset"] == "action"
 
 

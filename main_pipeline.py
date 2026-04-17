@@ -22,11 +22,11 @@ from modules.dialogue.dialogue_analyzer import (
 from modules.summarization.scene_summarizer import summarize_all_scenes, save_scene_summaries
 from modules.summarization.recap_generator import build_recap
 from modules.evaluation.eval import evaluate_recap
-from utils.fusion_engine import PRESETS, fusion_engine, save_fusion_output
+from modules.fusion.fusion_engine import PRESETS, fusion_engine, save_fusion_output
 from utils.input_handler import get_subtitle
 from utils.scene_ranker import get_ranked_scenes, extract_scene_ids, save_selected_scenes
 
-_RANKING_VERSION = "v2-adaptive"
+_RANKING_VERSION = "v3-timeline-coverage"
 
 
 def _read_text_if_exists(path: Path) -> str | None:
@@ -189,7 +189,7 @@ def run_full_pipeline(
         cache_key = _video_hash(video_path, percent_progress, summary_style, resolved_fusion_preset)
 
         notify("Preparing subtitles...")
-        subtitle_path = get_subtitle(video_path, subtitle_path)
+        subtitle_path = get_subtitle(video_path, subtitle_path, progress_callback=notify)
 
         notify("Detecting scenes...")
         scenes = None
@@ -331,6 +331,7 @@ def run_full_pipeline(
                         "dialogue_score": scene["dialogue_score"],
                         "motion_score": scene["motion_score"],
                         "object_score": scene["object_score"],
+                        "visual_score": scene.get("visual_score", 0.0),
                     }
                     for scene in fused_for_rationale
                 ]
@@ -426,8 +427,13 @@ def run_pipeline(
     fusion_preset: str = "auto",
     output_dir: str = "outputs",
     progress_callback: Callable[[str], None] | None = None,
-) -> str:
-    """Backward-compatible wrapper used by the Streamlit app and legacy scripts."""
+) -> Dict[str, Any]:
+    """Wrapper used by the Streamlit app.
+
+    Returns the full result dict (same as run_full_pipeline) so the app
+    can surface evaluation scores, scene counts, and other metadata.
+    A ``recap`` convenience key mirrors ``final_recap`` for old callers.
+    """
     result = run_full_pipeline(
         subtitle_path=subtitle_path,
         video_path=video_path,
@@ -437,7 +443,9 @@ def run_pipeline(
         output_dir=output_dir,
         progress_callback=progress_callback,
     )
-    return result["final_recap"]
+    # Convenience alias so any legacy caller doing result["recap"] still works.
+    result.setdefault("recap", result.get("final_recap", ""))
+    return result
 
 
 def build_arg_parser() -> argparse.ArgumentParser:

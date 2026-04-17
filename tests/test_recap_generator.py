@@ -39,8 +39,9 @@ def test_build_recap_uses_one_shot_generation(monkeypatch):
 
     assert result == "FINAL"
     assert captured["text"] == "S1 story. S2 story."
-    assert captured["max_length"] == 200
-    assert captured["min_length"] == 60
+    # Updated budget: Detailed now uses max_length=350, min_length=100
+    assert captured["max_length"] == 350
+    assert captured["min_length"] == 100
 
 
 def test_build_recap_concise_uses_shorter_generation_budget(monkeypatch):
@@ -60,10 +61,19 @@ def test_build_recap_concise_uses_shorter_generation_budget(monkeypatch):
 
     assert result == "FINAL"
     assert captured["text"] == "Only scene."
-    assert captured["max_length"] == 140
-    assert captured["min_length"] == 45
+    # Updated budget: Concise now uses max_length=160, min_length=50
+    assert captured["max_length"] == 160
+    assert captured["min_length"] == 50
 
 
 def test_combine_summaries_inserts_connectors():
     combined = rg.combine_summaries(["A", "B", "C"])
     assert "Meanwhile" in combined or "Later" in combined
+
+
+def test_select_top_scenes_still_exists():
+    # select_top_scenes is kept as a compatibility stub — tests and external
+    # callers that reference it must not get AttributeError.
+    scenes = [{"scene_id": i, "final": i / 10} for i in range(10)]
+    result = rg.select_top_scenes(scenes, top_percent=0.3)
+    assert len(result) == 3

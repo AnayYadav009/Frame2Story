@@ -13,8 +13,8 @@ def extract_scene_data(scene_list):
     for i, (start, end) in enumerate(scene_list, start=1):
         scene_data = {
             "scene_id": i,
-            "start": int(timecode_to_seconds(start)),
-            "end": int(timecode_to_seconds(end)),
+            "start": round(timecode_to_seconds(start), 3),
+            "end": round(timecode_to_seconds(end), 3),
         }
         scenes.append(scene_data)
 

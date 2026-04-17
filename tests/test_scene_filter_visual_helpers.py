@@ -18,8 +18,8 @@ def test_extract_scene_data_and_timecode_conversion():
     extracted = sd.extract_scene_data(scene_list)
 
     assert extracted == [
-        {"scene_id": 1, "start": 0, "end": 5},
-        {"scene_id": 2, "start": 6, "end": 11},
+        {"scene_id": 1, "start": 0.0, "end": 5.9},
+        {"scene_id": 2, "start": 6.0, "end": 11.0},
     ]
 
 

@@ -66,7 +66,7 @@ def test_get_subtitle_generates_when_missing(monkeypatch, tmp_path):
         audio.write_bytes(b"audio")
         return str(audio)
 
-    def _fake_transcribe(_audio_path):
+    def _fake_transcribe(_audio_path, progress_callback=None):
         generated.write_text("subtitle", encoding="utf-8")
         return str(generated)
 
