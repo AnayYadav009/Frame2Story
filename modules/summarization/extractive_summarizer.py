@@ -27,17 +27,12 @@ except Exception:
 _SENTENCE_SPLIT = re.compile(r"(?<=[.!?])\s+")
 
 _LANG_CODE_TO_SUMY = {
-    # Common global languages.
     "en": "english",
     "es": "spanish",
     "fr": "french",
     "de": "german",
     "it": "italian",
     "pt": "portuguese",
-
-    # Top Indian languages by usage.
-    # Sumy's tokenizer support for these is limited, so we map them to
-    # a robust tokenizer fallback instead of failing language detection.
     "hi": "english",  # Hindi
     "bn": "english",  # Bengali
     "mr": "english",  # Marathi
@@ -45,7 +40,6 @@ _LANG_CODE_TO_SUMY = {
     "ta": "english",  # Tamil
     "kn": "english",  # Kannada
     "ml": "english",  # Malayalam
-
 }
 
 
@@ -120,5 +114,4 @@ def extractive_summary_from_text(text: str, language: str | None = None) -> str:
     except Exception:
         pass
 
-    # Deterministic fallback to avoid empty output for unsupported language/tokenizer edge cases.
     return " ".join(sentences[:sentence_target])

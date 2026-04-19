@@ -7,7 +7,6 @@ from modules.summarization.extractive_summarizer import detect_language
 
 SPEAKER_PATTERN = re.compile(r"^([A-Z][A-Z\s\-']{1,20}):\s*(.+)")
 
-
 def load_scenes(path):
     with open(path, "r", encoding="utf-8") as f:
         return json.load(f)
@@ -23,13 +22,7 @@ def load_subtitles(path):
         except UnicodeDecodeError as error:
             last_error = error
 
-    raise UnicodeDecodeError(
-        "subtitle-decoder",
-        b"",
-        0,
-        1,
-        f"Could not decode subtitle file {path!r}. Last error: {last_error}",
-    )
+    raise UnicodeDecodeError("subtitle-decoder",b"",0,1,f"Could not decode subtitle file {path!r}. Last error: {last_error}")
 
 
 def time_to_seconds(t):
@@ -66,16 +59,27 @@ def detect_subtitle_language(subs, sample_size=20):
 def align_dialogue_to_scenes(subs, scenes):
     subs_list = list(subs)
     detected_language = detect_subtitle_language(subs_list)
-
-    # scene_id -> list of structured subtitle entries
+    
     scene_dialogues = {str(scene["scene_id"]): [] for scene in scenes}
+    
+    # Efficient O(N + M) alignment using two pointers (both sorted by time)
+    scene_idx = 0
+    num_scenes = len(scenes)
+    
+    if num_scenes == 0:
+        return scene_dialogues, detected_language
 
     for sub in subs_list:
         sub_time = time_to_seconds(sub.start)
-
-        for scene in scenes:
-            # Half-open interval prevents boundary duplicates.
-            if scene["start"] <= sub_time < scene["end"]:
+        
+        # Advance scene_idx if subtitle is past current scene
+        while scene_idx < num_scenes and sub_time >= scenes[scene_idx]["end"]:
+            scene_idx += 1
+            
+        if scene_idx < num_scenes:
+            scene = scenes[scene_idx]
+            # Check if subtitle is within the scene (since we already know it's not past the end)
+            if scene["start"] <= sub_time:
                 scene_id = str(scene["scene_id"])
                 speaker, line = extract_speaker(sub.text)
                 scene_dialogues[scene_id].append(
@@ -84,7 +88,6 @@ def align_dialogue_to_scenes(subs, scenes):
                         "line": line,
                     }
                 )
-                break
 
     return scene_dialogues, detected_language
 

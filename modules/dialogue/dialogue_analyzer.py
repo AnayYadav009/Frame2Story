@@ -17,11 +17,7 @@ def _dialogue_line(entry):
 
 
 def combine_dialogue(dialogue_list):
-    return " ".join(
-        line
-        for line in (_dialogue_line(entry) for entry in dialogue_list)
-        if line
-    )
+    return " ".join(line for line in (_dialogue_line(entry) for entry in dialogue_list) if line)
 
 
 def get_scene_speakers(dialogue_list):
@@ -91,21 +87,17 @@ def analyze_dialogues(scene_dialogues):
             continue
 
         text = combine_dialogue(dialogues)
-
         score = compute_dialogue_score(text)
-
         scores[scene_id] = score
 
     return scores
 
 
 def save_scene_speakers(data, path):
-
     with open(path, "w", encoding="utf-8") as f:
         json.dump(data, f, indent=4, ensure_ascii=False)
 
 def save_dialogue_scores(data, path):
-
     with open(path, "w") as f:
         json.dump(data, f, indent=4)
 

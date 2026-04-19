@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import time
 from pathlib import Path
 from typing import Callable, Dict, Any
 
@@ -10,7 +11,6 @@ from modules.scene.scene_pipeline import run_scene_pipeline, compute_scene_featu
 from modules.dialogue.dialogue_aligner import (
     load_subtitles,
     align_dialogue_to_scenes,
-    detect_subtitle_language,
     save_scene_dialogues,
 )
 from modules.dialogue.dialogue_analyzer import (
@@ -22,11 +22,12 @@ from modules.dialogue.dialogue_analyzer import (
 from modules.summarization.scene_summarizer import summarize_all_scenes, save_scene_summaries
 from modules.summarization.recap_generator import build_recap
 from modules.evaluation.eval import evaluate_recap
-from modules.fusion.fusion_engine import PRESETS, fusion_engine, save_fusion_output
+from modules.fusion.fusion_engine import PRESETS, fusion_engine, save_fusion_output, detect_genre_preset
 from utils.input_handler import get_subtitle
 from utils.scene_ranker import get_ranked_scenes, extract_scene_ids, save_selected_scenes
 
-_RANKING_VERSION = "v3-timeline-coverage"
+_RANKING_VERSION = "v5-robust-summaries"
+_FUSION_VERSION = _RANKING_VERSION
 
 
 def _read_text_if_exists(path: Path) -> str | None:
@@ -91,22 +92,40 @@ def _load_json_if_exists(path: Path) -> Any | None:
     return None
 
 
+def _get_base_key(video_path: str) -> str:
+    """Stable key for visual features (video content + version)."""
+    h = hashlib.sha256()
+    h.update(_RANKING_VERSION.encode("utf-8"))
+    with open(video_path, "rb") as f:
+        h.update(f.read(2 * 1024 * 1024))
+    return h.hexdigest()[:16]
+
+
 def _video_hash(
     video_path: str,
     progress: int | float,
     summary_style: str,
     fusion_preset: str = "auto",
+    perspective: str = "Neutral",
 ) -> str:
-    h = hashlib.sha256()
+    """Legacy hash for backward compatibility if needed. Now using split keys."""
+    base = _get_base_key(video_path)
+    h = hashlib.sha256(base.encode("utf-8"))
     h.update(str(progress).encode("utf-8"))
     h.update(summary_style.encode("utf-8"))
     h.update(fusion_preset.encode("utf-8"))
-    # Version stamp ensures cached artifacts are invalidated when the scene
-    # selection or fusion algorithm changes between runs.
-    h.update(_RANKING_VERSION.encode("utf-8"))
-    with open(video_path, "rb") as f:
-        h.update(f.read(2 * 1024 * 1024))
+    h.update(perspective.encode("utf-8"))
     return h.hexdigest()[:16]
+
+
+def _scope_key_fragment(
+    percent_progress: int | float,
+    range_start_sec: float | None,
+    range_end_sec: float | None,
+) -> str:
+    if range_start_sec is not None and range_end_sec is not None:
+        return f"range:{float(range_start_sec):.3f}-{float(range_end_sec):.3f}"
+    return f"progress:{float(percent_progress):.3f}"
 
 
 def _resolve_fusion_preset(preset: str) -> tuple[str, Any]:
@@ -145,17 +164,21 @@ def _normalize_language(value: Any, fallback: str = "en") -> str:
 
 
 def run_full_pipeline(
-    subtitle_path: str | None,
+    subtitle_path: str | None = None,
     video_path: str | None = None,
-    percent_progress: int = 70,
-    scene_gap: float = 5.0,
+    percent_progress: int | float = 70,
+    range_start_sec: float | None = None,
+    range_end_sec: float | None = None,
     summary_style: str = "Concise",
     fusion_preset: str = "auto",
+    perspective: str = "Neutral",
     output_dir: str = "outputs",
+    run_evaluation: bool = False,
     progress_callback: Callable[[str], None] | None = None,
+    custom_weights: Any | None = None,
 ) -> Dict[str, Any]:
-    _ = scene_gap
-
+    timings = {}
+    
     def notify(message: str) -> None:
         if progress_callback:
             progress_callback(message)
@@ -185,15 +208,47 @@ def run_full_pipeline(
 
     resolved_fusion_preset, fusion_weights = _resolve_fusion_preset(fusion_preset)
 
-    if video_path is not None:
-        cache_key = _video_hash(video_path, percent_progress, summary_style, resolved_fusion_preset)
+    if (range_start_sec is None) != (range_end_sec is None):
+        raise ValueError("Both range_start_sec and range_end_sec must be provided together")
 
-        notify("Preparing subtitles...")
-        subtitle_path = get_subtitle(video_path, subtitle_path, progress_callback=notify)
+    if video_path is not None:
+        # 1. Base Key: Video + Ranking Version (for visual features)
+        base_key = _get_base_key(video_path)
+        scope_fragment = _scope_key_fragment(percent_progress, range_start_sec, range_end_sec)
+        
+        scene_h = hashlib.sha256(base_key.encode("utf-8"))
+        scene_h.update(scope_fragment.encode("utf-8"))
+        scene_key = scene_h.hexdigest()[:16]
+        
+        # 2. Dialogue Key: scene_key + ... (for dialogue alignment/scores)
+        # (Using scene_key as base ensures dialogue also shifts with progress)
+        dialogue_h = hashlib.sha256(scene_key.encode("utf-8"))
+        dialogue_key = dialogue_h.hexdigest()[:16]
+
+        # 3. Fusion Key: Dialogue + Preset (for ranking)
+        fusion_h = hashlib.sha256(dialogue_key.encode("utf-8"))
+        fusion_h.update(resolved_fusion_preset.encode("utf-8"))
+        fusion_key = fusion_h.hexdigest()[:16]
+
+        # 4. Summary Key: Fusion + Style + Perspective (for final recap)
+        summary_h = hashlib.sha256(fusion_key.encode("utf-8"))
+        summary_h.update(summary_style.encode("utf-8"))
+        summary_h.update(perspective.encode("utf-8"))
+        summary_key = summary_h.hexdigest()[:16]
+
+        # Optimize: Check if dialogue is already cached to avoid Whisper work
+        if not subtitle_path and _cache_valid(dialogues_path, dialogue_key):
+            notify("Using cached dialogue artifacts...")
+        else:
+            notify("Preparing subtitles...")
+            t_start = time.perf_counter()
+            subtitle_path = get_subtitle(video_path, subtitle_path, progress_callback=notify)
+            timings["subtitles"] = time.perf_counter() - t_start
 
         notify("Detecting scenes...")
         scenes = None
-        if _cache_valid(scenes_path, cache_key):
+        t_start = time.perf_counter()
+        if _cache_valid(scenes_path, scene_key):
             cached_scenes = _load_json_if_exists(scenes_path)
             if isinstance(cached_scenes, list):
                 scenes = cached_scenes
@@ -203,13 +258,19 @@ def run_full_pipeline(
             scenes = run_scene_pipeline(
                 video_path=video_path,
                 progress_percentage=float(percent_progress),
+                start_time_sec=range_start_sec,
+                end_time_sec=range_end_sec,
                 output_path=str(scenes_path),
             )
-            _write_cache_key(scenes_path, cache_key)
+            _write_cache_key(scenes_path, scene_key)
+            timings["scene_detection"] = time.perf_counter() - t_start
+        else:
+            timings["scene_detection"] = 0.0
 
         notify("Extracting visual features...")
         scene_features = None
-        if _cache_valid(features_path, cache_key):
+        t_start = time.perf_counter()
+        if _cache_valid(features_path, scene_key):
             cached_features = _load_json_if_exists(features_path)
             if isinstance(cached_features, (list, dict)):
                 scene_features = cached_features
@@ -222,19 +283,24 @@ def run_full_pipeline(
                 output_path=str(features_path),
                 keyframes_dir="data/keyframes",
                 save_keyframes=True,
+                cleanup_keyframes=True,
             )
-            _write_cache_key(features_path, cache_key)
+            _write_cache_key(features_path, scene_key)
+            timings["visual_features"] = time.perf_counter() - t_start
+        else:
+            timings["visual_features"] = 0.0
 
         notify("Aligning dialogue...")
         scene_dialogues = None
         detected_language = "en"
-        if _cache_valid(dialogues_path, cache_key):
+        t_start = time.perf_counter()
+        if _cache_valid(dialogues_path, dialogue_key):
             cached_dialogues = _load_json_if_exists(dialogues_path)
             if isinstance(cached_dialogues, dict):
                 scene_dialogues = cached_dialogues
                 notify("Aligning dialogue... (cached)")
 
-        if _cache_valid(language_path, cache_key):
+        if _cache_valid(language_path, dialogue_key):
             cached_language_payload = _load_json_if_exists(language_path)
             if isinstance(cached_language_payload, dict):
                 detected_language = _normalize_language(cached_language_payload.get("language"))
@@ -245,29 +311,23 @@ def run_full_pipeline(
             subs = load_subtitles(subtitle_path)
             scene_dialogues, detected_language = align_dialogue_to_scenes(subs, scenes)
             save_scene_dialogues(scene_dialogues, str(dialogues_path))
-            _write_cache_key(dialogues_path, cache_key)
+            _write_cache_key(dialogues_path, dialogue_key)
             with language_path.open("w", encoding="utf-8") as f:
                 json.dump({"language": detected_language}, f, indent=2)
-            _write_cache_key(language_path, cache_key)
-        elif subtitle_path and detected_language == "en" and not language_path.exists():
-            try:
-                subs = load_subtitles(subtitle_path)
-                detected_language = detect_subtitle_language(subs)
-            except Exception:
-                detected_language = "en"
-
-            with language_path.open("w", encoding="utf-8") as f:
-                json.dump({"language": detected_language}, f, indent=2)
-            _write_cache_key(language_path, cache_key)
+            _write_cache_key(language_path, dialogue_key)
+            timings["dialogue_alignment"] = time.perf_counter() - t_start
+        else:
+            timings["dialogue_alignment"] = 0.0
 
         scene_speakers = extract_scene_speakers(scene_dialogues)
         save_scene_speakers(scene_speakers, str(speakers_path))
-        _write_cache_key(speakers_path, cache_key)
+        _write_cache_key(speakers_path, dialogue_key)
 
         notify("Scoring and ranking scenes...")
         ranked_scene_ids = None
-        fused_scores = None  # initialised here so rationale block can read it on cache-hit runs
-        if _cache_valid(ranked_ids_path, cache_key):
+        fused_scores = None
+        t_start = time.perf_counter()
+        if _cache_valid(ranked_ids_path, fusion_key):
             cached_ranked_ids = _load_json_if_exists(ranked_ids_path)
             if isinstance(cached_ranked_ids, list):
                 try:
@@ -281,7 +341,7 @@ def run_full_pipeline(
 
         if ranked_scene_ids is None:
             dialogue_scores = None
-            if _cache_valid(dialogue_scores_path, cache_key):
+            if _cache_valid(dialogue_scores_path, dialogue_key):
                 cached_dialogue_scores = _load_json_if_exists(dialogue_scores_path)
                 if isinstance(cached_dialogue_scores, dict):
                     dialogue_scores = cached_dialogue_scores
@@ -289,23 +349,34 @@ def run_full_pipeline(
             if dialogue_scores is None:
                 dialogue_scores = analyze_dialogues(scene_dialogues)
                 save_dialogue_scores(dialogue_scores, str(dialogue_scores_path))
-                _write_cache_key(dialogue_scores_path, cache_key)
+                _write_cache_key(dialogue_scores_path, dialogue_key)
 
             fused_scores = None
-            if _cache_valid(fused_path, cache_key):
+            if _cache_valid(fused_path, fusion_key):
                 cached_fused_scores = _load_json_if_exists(fused_path)
                 if isinstance(cached_fused_scores, list):
                     fused_scores = cached_fused_scores
 
+            effective_preset = resolved_fusion_preset
             if fused_scores is None:
+                if custom_weights is not None:
+                    effective_weights = custom_weights
+                    notify("Using custom fusion weights from Pro Mode")
+                elif resolved_fusion_preset == "auto":
+                    effective_preset = detect_genre_preset(scene_features, dialogue_scores)
+                    notify(f"Inferred genre: {effective_preset.title()}")
+                    _, effective_weights = _resolve_fusion_preset(effective_preset)
+                else:
+                    _, effective_weights = _resolve_fusion_preset(effective_preset)
+
                 fused_scores = fusion_engine(
                     scene_features,
                     dialogue_scores,
                     visual_data=scene_features,
-                    weights=fusion_weights,
+                    weights=effective_weights,
                 )
                 save_fusion_output(fused_scores, str(fused_path))
-                _write_cache_key(fused_path, cache_key)
+                _write_cache_key(fused_path, fusion_key)
 
             watched_duration_sec = max((s.get("end", 0) for s in scenes), default=0) if scenes else 0
             ranked_scenes = get_ranked_scenes(
@@ -316,10 +387,13 @@ def run_full_pipeline(
             ranked_scene_ids = extract_scene_ids(ranked_scenes)
             save_selected_scenes(ranked_scenes, str(selected_path))
             save_selected_scenes(ranked_scene_ids, str(ranked_ids_path))
-            _write_cache_key(selected_path, cache_key)
-            _write_cache_key(ranked_ids_path, cache_key)
+            _write_cache_key(selected_path, fusion_key)
+            _write_cache_key(ranked_ids_path, fusion_key)
+            timings["ranking"] = time.perf_counter() - t_start
+        else:
+            timings["ranking"] = 0.0
 
-        if not _cache_valid(rationale_path, cache_key):
+        if not _cache_valid(rationale_path, fusion_key):
             fused_for_rationale = fused_scores or (_load_json_if_exists(fused_path) or [])
             if fused_for_rationale:
                 selected_id_set = set(ranked_scene_ids)
@@ -337,13 +411,14 @@ def run_full_pipeline(
                 ]
                 with rationale_path.open("w", encoding="utf-8") as f:
                     json.dump(rationale, f, indent=2)
-                _write_cache_key(rationale_path, cache_key)
+                _write_cache_key(rationale_path, fusion_key)
 
         save_selected_scenes(ranked_scene_ids, str(scenes_output_dir / "ranked_scene_ids.json"))
 
         notify("Summarizing scenes...")
         scene_summaries = None
-        if _cache_valid(summaries_path, cache_key):
+        t_start = time.perf_counter()
+        if _cache_valid(summaries_path, summary_key):
             cached_summaries = _load_json_if_exists(summaries_path)
             if isinstance(cached_summaries, dict):
                 scene_summaries = cached_summaries
@@ -359,9 +434,13 @@ def run_full_pipeline(
                 scene_features=scene_features,
                 summary_style=summary_style,
                 language=detected_language,
+                perspective=perspective,
             )
             save_scene_summaries(scene_summaries, str(summaries_path))
-            _write_cache_key(summaries_path, cache_key)
+            _write_cache_key(summaries_path, summary_key)
+            timings["scene_summarization"] = time.perf_counter() - t_start
+        else:
+            timings["scene_summarization"] = 0.0
 
         save_scene_summaries(scene_summaries, str(summaries_output_dir / "scene_summaries.json"))
     else:
@@ -384,6 +463,7 @@ def run_full_pipeline(
             ranked_scene_ids = ranked_scene_ids
 
     notify("Generating final recap...")
+    t_start = time.perf_counter()
     final_recap = build_recap(
         ranked_scene_ids,
         scene_summaries,
@@ -393,19 +473,23 @@ def run_full_pipeline(
     (final_output_dir / "final_recap.txt").write_text(final_recap, encoding="utf-8")
     with (final_output_dir / "final_recap.json").open("w", encoding="utf-8") as f:
         json.dump({"movie_recap": final_recap}, f, indent=2)
+    timings["final_recap"] = time.perf_counter() - t_start
 
     eval_scores = None
     eval_error = None
     reference_text = _resolve_reference_text(scene_dialogues, ranked_scene_ids)
-    if reference_text:
+    
+    if reference_text and run_evaluation:
         notify("Evaluating recap quality...")
         eval_output_path = output_root / "eval" / "scores.json"
+        t_start = time.perf_counter()
         try:
             eval_scores = evaluate_recap(
                 generated_recap=final_recap,
                 reference_text=reference_text,
                 output_path=str(eval_output_path),
             )
+            timings["evaluation"] = time.perf_counter() - t_start
         except Exception as exc:
             eval_error = str(exc)
 
@@ -413,9 +497,16 @@ def run_full_pipeline(
         "subtitle_path": subtitle_path,
         "scene_count": len(scenes),
         "selected_scene_count": len(ranked_scene_ids),
+        "scope": "timestamp-range" if (range_start_sec is not None and range_end_sec is not None) else "progress",
+        "range_start_sec": range_start_sec,
+        "range_end_sec": range_end_sec,
+        "progress_percent": percent_progress,
         "final_recap": final_recap,
+        "reference_text": reference_text,
         "evaluation": eval_scores,
         "evaluation_error": eval_error,
+        "timings": timings,
+        "detected_genre": effective_preset if 'effective_preset' in locals() else resolved_fusion_preset,
     }
 
 
@@ -423,10 +514,15 @@ def run_pipeline(
     video_path: str | None = None,
     subtitle_path: str | None = None,
     progress: int = 70,
+    range_start_sec: float | None = None,
+    range_end_sec: float | None = None,
     summary_style: str = "Concise",
     fusion_preset: str = "auto",
+    perspective: str = "Neutral",
     output_dir: str = "outputs",
+    run_evaluation: bool = False,
     progress_callback: Callable[[str], None] | None = None,
+    custom_weights: Any | None = None,
 ) -> Dict[str, Any]:
     """Wrapper used by the Streamlit app.
 
@@ -438,10 +534,15 @@ def run_pipeline(
         subtitle_path=subtitle_path,
         video_path=video_path,
         percent_progress=progress,
+        range_start_sec=range_start_sec,
+        range_end_sec=range_end_sec,
         summary_style=summary_style,
         fusion_preset=fusion_preset,
+        perspective=perspective,
         output_dir=output_dir,
+        run_evaluation=run_evaluation,
         progress_callback=progress_callback,
+        custom_weights=custom_weights,
     )
     # Convenience alias so any legacy caller doing result["recap"] still works.
     result.setdefault("recap", result.get("final_recap", ""))
@@ -453,6 +554,8 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--video", default="data/input/sample_video.mp4", help="Path to movie/video file")
     parser.add_argument("--subtitle", default="data/input/sample_himym.srt", help="Path to subtitle .srt file")
     parser.add_argument("--progress", type=int, default=40, help="Watch progress percentage")
+    parser.add_argument("--start_ts", type=float, default=None, help="Optional start timestamp (seconds)")
+    parser.add_argument("--end_ts", type=float, default=None, help="Optional end timestamp (seconds)")
     parser.add_argument("--summary_style", choices=["Concise", "Detailed"], default="Concise", help="Recap summary style")
     parser.add_argument(
         "--fusion_preset",
@@ -461,6 +564,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
         help="Fusion weight preset for scene ranking",
     )
     parser.add_argument("--output_dir", default="outputs", help="Final output directory")
+    parser.add_argument("--eval", action="store_true", help="Enable ROUGE/BERTScore evaluation")
     return parser
 
 
@@ -470,9 +574,12 @@ def main() -> None:
         subtitle_path=args.subtitle,
         video_path=args.video,
         percent_progress=args.progress,
+        range_start_sec=args.start_ts,
+        range_end_sec=args.end_ts,
         summary_style=args.summary_style,
         fusion_preset=args.fusion_preset,
         output_dir=args.output_dir,
+        run_evaluation=args.eval,
     )
     print("\nFINAL RECAP:\n")
     print(result["final_recap"])

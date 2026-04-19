@@ -1,26 +1,3 @@
-"""Scene ranking and adaptive selection.
-
-Public API (unchanged):
-    rank_scenes, select_top_scenes, select_by_threshold,
-    adaptive_select_scenes, restore_timeline_order,
-    get_ranked_scenes, save_selected_scenes, extract_scene_ids
-
-Key improvements over the previous version
--------------------------------------------
-* ``adaptive_select_scenes`` uses count-aware bounds:
-
-      min_keep = max(8, ceil(n * 0.10), ceil(watched / 240))
-      max_keep = min(35, max(min_keep, ceil(n * 0.20), ceil(watched / 90), 12))
-
-  where n = total scenes passed in.
-
-* Timeline-window coverage:
-  - Splits chronological scene IDs into up to 8 equal windows.
-  - Reserves the highest-scoring scene from each non-empty window first.
-  - Fills remaining slots from the globally-ranked list (no duplicates).
-  - Final output is always sorted by scene_id (chronological).
-"""
-
 from __future__ import annotations
 
 import json
@@ -67,7 +44,6 @@ def _timeline_coverage(
         return []
 
     all_ids  = sorted(s["scene_id"] for s in ranked_scenes)
-    id_to_scene = {s["scene_id"]: s for s in ranked_scenes}
 
     n        = len(all_ids)
     n_wins   = min(n_windows, n)
@@ -82,10 +58,7 @@ def _timeline_coverage(
         window_ids = set(all_ids[lo:hi])
 
         # Best candidate in this window (ranked_scenes is score-sorted)
-        best = next(
-            (s for s in ranked_scenes if s["scene_id"] in window_ids),
-            None,
-        )
+        best = next((s for s in ranked_scenes if s["scene_id"] in window_ids), None)
         if best and best["scene_id"] not in chosen_ids:
             chosen.append(best)
             chosen_ids.add(best["scene_id"])
@@ -122,13 +95,10 @@ def adaptive_select_scenes(
     if watched_duration_sec and watched_duration_sec > 0:
         dur = watched_duration_sec
         min_keep = max(8, math.ceil(n * 0.10), math.ceil(dur / 240))
-        max_keep = min(
-            35,
-            max(min_keep, math.ceil(n * 0.20), math.ceil(dur / 90), 12),
-        )
+        max_keep = min(60, max(min_keep, math.ceil(n * 0.20), math.ceil(dur / 90), 12))
     else:
         min_keep = max(4, math.ceil(n * 0.10))
-        max_keep = min(35, max(min_keep, math.ceil(n * 0.20), 12))
+        max_keep = min(60, max(min_keep, math.ceil(n * 0.20), 12))
 
     # Clamp so we never request more than we have
     min_keep = min(min_keep, n)
@@ -194,9 +164,7 @@ def get_ranked_scenes(
     """
     ranked = rank_scenes(scene_data)
     if adaptive:
-        selected = adaptive_select_scenes(
-            ranked, watched_duration_sec=watched_duration_sec
-        )
+        selected = adaptive_select_scenes(ranked, watched_duration_sec=watched_duration_sec)
     else:
         selected = select_by_threshold(ranked, threshold)
     return restore_timeline_order(selected)
@@ -213,8 +181,6 @@ def extract_scene_ids(selected_scenes: list) -> list:
         for s in selected_scenes
     ]
 
-
-# ── CLI entry point ───────────────────────────────────────────────────────────
 
 def main() -> None:
     scene_data = load_scene_scores("data/fused_scores.json")

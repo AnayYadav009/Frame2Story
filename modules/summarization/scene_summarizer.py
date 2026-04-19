@@ -3,11 +3,19 @@ import re
 from pathlib import Path
 from typing import Any, Dict, List
 
-from modules.dialogue.dialogue_analyzer import get_scene_speakers
 from modules.summarization.extractive_summarizer import extractive_summary_from_text
-from modules.summarization.abstractive_summarizer import summarize_text as abstractive_summarize_text
+from modules.summarization.abstractive_summarizer import (summarize_text_batch)
 
 MIN_DIALOGUE_WORDS = 8
+
+WHISPER_NOISE_PATTERNS = [
+    r"\[.*?\]",           # [Music], [Laughter]
+    r"\(.*?\)",           # (Background noise)
+    r"♪.*?♪",             # Musical notes
+    r"Thank you for watching",
+    r"Please subscribe",
+    r"Subtitles by",
+]
 
 
 def load_scene_dialogues(path):
@@ -42,22 +50,17 @@ def combine_dialogue(dialogue_list):
             line = str(entry).strip()
 
         if line:
-            lines.append(line)
+            # Filter noise
+            for pattern in WHISPER_NOISE_PATTERNS:
+                line = re.sub(pattern, "", line, flags=re.IGNORECASE).strip()
+            
+            if line:
+                lines.append(line)
 
     return " ".join(lines)
 
 
 def format_as_sasum_dialogue(dialogue_list: List) -> str:
-    """Format dialogue in SAMSum training format: 'Speaker: line\\n'.
-
-    philschmid/bart-large-cnn-samsum was fine-tuned on the SAMSum dataset
-    whose conversations look like:
-        Amanda: I baked cookies. Do you want some?
-        Jerry: Sure!
-    Passing text in this exact format gives the model the distribution it
-    was trained on, reducing hallucination compared to flat paragraph input
-    or custom instruction prefixes.
-    """
     lines = []
     for entry in dialogue_list:
         if isinstance(entry, dict):
@@ -79,11 +82,6 @@ def format_as_sasum_dialogue(dialogue_list: List) -> str:
 
 
 def build_scene_prompt(text, speakers):
-    """Prepend speaker list to dialogue text.
-
-    Used for the flat-text path (non-SAMSum). Kept for backward compatibility
-    with existing callers and tests.
-    """
     if speakers:
         speaker_context = "Characters in this scene: " + ", ".join(speakers) + ". "
         return speaker_context + text
@@ -91,13 +89,6 @@ def build_scene_prompt(text, speakers):
 
 
 def build_scene_context(scene_id, feature_map):
-    """Build a compact visual-context string from scene features.
-
-    For use in scene_rationale.json and Streamlit UI display only.
-    Never pass this to any summarization model — BART paraphrases
-    metadata tokens into natural language garbage such as
-    "The scene is in time 207s" or "There is high motion going on scene".
-    """
     feature = feature_map.get(str(scene_id), {})
     parts = []
 
@@ -119,28 +110,54 @@ def build_scene_context(scene_id, feature_map):
     return "; ".join(parts)
 
 
-def _first_n_sentences(text, n=2):
-    """Return the first n sentences of raw dialogue as a fallback summary."""
-    sentences = [s.strip() for s in re.split(r"[.!?]+", text) if s.strip()]
-    if not sentences:
-        return text[:200].strip()
-    return ". ".join(sentences[:n]).strip() + "."
+def _build_fallback_summary(text: str, scene_id: str, feature_map: dict) -> str:
+    feat = feature_map.get(str(scene_id), {})
+    objects = feat.get("objects", [])
+    motion = feat.get("motion_level", "low").lower()
+    
+    sentences = [s.strip() for s in re.split(r"[.!?]+", text) if len(s.strip()) > 5]
+    if sentences:
+        dialogue_part = sentences[0] + "."
+    else:
+        dialogue_part = ""
+
+    interesting_objects = [o for o in objects if o.lower() != "person"][:2]
+    if interesting_objects:
+        obj_text = f"The scene features {', '.join(interesting_objects)}."
+    else:
+        obj_text = ""
+
+    if motion == "high":
+        motion_text = "There is intense action."
+    else:
+        motion_text = ""
+
+    parts = [p for p in [dialogue_part, obj_text, motion_text] if p]
+    if not parts:
+        return text[:200].strip() + "..." if text else "A quiet scene."
+    
+    return " ".join(parts)
 
 
-def summarize_scene(text, language="en"):
-    """Summarize a single scene's formatted dialogue text.
-
-    Expects text already formatted for the model (SAMSum format for English,
-    plain combined text for non-English extractive path).
-    """
+def summarize_scene(text, language="en", perspective="Neutral"):
+    """Summarize a single scene's formatted dialogue text (Legacy API)."""
     base_language = (language or "en").strip().lower().split("-")[0]
 
     if base_language != "en":
         extractive = extractive_summary_from_text(text, language=language)
         return extractive or text[:300]
 
-    abstractive = abstractive_summarize_text(text, max_length=80, min_length=25)
-    return abstractive or text[:300]
+    # Re-apply perspective logic for single-scene calls
+    persp = (perspective or "Neutral").strip().lower()
+    if persp == "protagonist":
+        input_text = f"Summary from the hero's perspective: {text}"
+    elif persp == "antagonist":
+        input_text = f"Summary from the villain's perspective: {text}"
+    else:
+        input_text = text
+
+    results = summarize_text_batch([input_text], max_length=80, min_length=25)
+    return results[0] if results else text[:300]
 
 
 def trim_summary(summary, importance, max_sentences=3):
@@ -188,41 +205,61 @@ def summarize_all_scenes(
     scene_features=None,
     summary_style: str = "Detailed",
     language: str = "en",
+    perspective: str = "Neutral",
 ):
     feature_map = _normalize_scene_features(scene_features)
     max_sentences = _max_sentences_for_style(summary_style)
     base_language = (language or "en").strip().lower().split("-")[0]
 
     scene_summaries = {}
+    batch_ids = []
+    batch_texts = []
 
     for scene_id, dialogue_list in scene_dialogues.items():
-
         if not dialogue_list:
             scene_summaries[scene_id] = ""
             continue
 
         raw_text = combine_dialogue(dialogue_list)
 
+        # 1. Check for Fallback (Sparse dialogue)
         if len(raw_text.split()) < MIN_DIALOGUE_WORDS:
-            summary = _first_n_sentences(raw_text, n=2)
+            summary = _build_fallback_summary(raw_text, scene_id, feature_map)
             importance = float(feature_map.get(str(scene_id), {}).get("importance", 0.5))
             scene_summaries[scene_id] = trim_summary(summary, importance, max_sentences=max_sentences)
             continue
 
-        if base_language == "en":
-            formatted_text = format_as_sasum_dialogue(dialogue_list)
+        # 2. Check for Extractive (Non-English)
+        if base_language != "en":
+            summary = extractive_summary_from_text(raw_text, language=language) or raw_text[:300]
+            importance = float(feature_map.get(str(scene_id), {}).get("importance", 0.5))
+            scene_summaries[scene_id] = trim_summary(summary, importance, max_sentences=max_sentences)
+            continue
+
+        # 3. Queue for Abstractive Batch (English)
+        formatted_text = format_as_sasum_dialogue(dialogue_list)
+        persp = (perspective or "Neutral").strip().lower()
+        if persp == "protagonist":
+            input_text = f"Summary from the hero's perspective: {formatted_text}"
+        elif persp == "antagonist":
+            input_text = f"Summary from the villain's perspective: {formatted_text}"
         else:
-            formatted_text = raw_text
+            input_text = formatted_text
+        
+        batch_ids.append(scene_id)
+        batch_texts.append(input_text)
 
-        summary = summarize_scene(formatted_text, language=language)
-
-        if not summary.strip() and raw_text:
-            summary = _first_n_sentences(raw_text, n=2)
-
-        importance = float(feature_map.get(str(scene_id), {}).get("importance", 0.5))
-        summary = trim_summary(summary, importance, max_sentences=max_sentences)
-
-        scene_summaries[scene_id] = summary
+    # Execute Batch Abstractive Summarization
+    if batch_texts:
+        summaries = summarize_text_batch(batch_texts, max_length=80, min_length=25)
+        for scene_id, summary in zip(batch_ids, summaries):
+            if not summary.strip():
+                # Fallback if BART failed
+                raw_text = combine_dialogue(scene_dialogues[scene_id])
+                summary = _build_fallback_summary(raw_text, scene_id, feature_map)
+            
+            importance = float(feature_map.get(str(scene_id), {}).get("importance", 0.5))
+            scene_summaries[scene_id] = trim_summary(summary, importance, max_sentences=max_sentences)
 
     return scene_summaries
 

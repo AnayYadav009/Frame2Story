@@ -150,18 +150,77 @@ CONNECTORS = [
 ]
 
 
-def combine_summaries(summaries):
+def _deduplicate_sentences(text: str) -> str:
+    """Removes redundant sentences and tautologies."""
+    if not text:
+        return ""
+    # Split by common sentence delimiters
+    sentences = [s.strip() for s in re.split(r"(?<=[.!?])\s+", text) if s.strip()]
+    seen = set()
+    unique = []
+    for s in sentences:
+        norm = s.lower().strip(".,! ")
+        
+        # Catch tautologies like "X if X"
+        parts = norm.split(" if ")
+        if len(parts) == 2 and parts[0].strip() == parts[1].strip():
+            continue
+            
+        if norm not in seen:
+            unique.append(s)
+            seen.add(norm)
+    return " ".join(unique)
+
+
+def _inject_system_context(text: str) -> str:
+    """Prefixes text with a guiding context for the final recap stage."""
+    # Temporarily disabled to maintain contract with existing tests
+    return text
+
+
+def combine_summaries(summaries, scene_ids=None, feature_map=None):
+    """Combine scene summaries with temporal connectors.
+    
+    If scene_ids and feature_map are provided, uses the time gap between scenes
+    to choose appropriate transition phrases.
+    """
     if not summaries:
         return ""
 
     combined = summaries[0].strip()
+    if not combined.endswith((".", "!", "?")):
+        combined += "."
 
     for i in range(1, len(summaries)):
-        connector = CONNECTORS[i % len(CONNECTORS)]
         next_summary = summaries[i].strip()
+        
+        # Determine connector based on time gap
+        connector = "Next"
+        if scene_ids and feature_map and i < len(scene_ids):
+            prev_id = str(scene_ids[i-1])
+            curr_id = str(scene_ids[i])
+            prev_feat = feature_map.get(prev_id, {})
+            curr_feat = feature_map.get(curr_id, {})
+            
+            prev_end = prev_feat.get("end", 0)
+            curr_start = curr_feat.get("start", 0)
+            gap = max(0, curr_start - prev_end)
+            
+            if gap < 2:
+                connector = "Immediately after"
+            elif gap < 60:
+                connector = "Shortly after"
+            elif gap < 300:
+                connector = "A few minutes later"
+            else:
+                connector = "Much later"
+        else:
+            # Fallback to rotating connectors if no timing info
+            connector = CONNECTORS[i % len(CONNECTORS)]
+
+        combined += f" {connector}, {next_summary}"
         if not combined.endswith((".", "!", "?")):
             combined += "."
-        combined += f" {connector}, {next_summary}"
 
     return combined
 
@@ -288,12 +347,18 @@ def build_recap(ranked_scenes, scene_summaries, scene_features=None, summary_sty
 
         importance = float(feature_map.get(key, {}).get("importance", 0.5))
         k = max(1, round(importance * max_sentences))
-        ordered_texts.append(_trim_summary_to_sentences(summary, k))
+        trimmed = _trim_summary_to_sentences(summary, k)
+        
+        narrative_part = trimmed.split("The scene features")[0].strip()
+        if narrative_part:
+            ordered_texts.append(narrative_part)
+        else:
+            ordered_texts.append(trimmed)
 
     if not ordered_texts:
         return ""
 
-    combined_text = " ".join(ordered_texts)
+    combined_text = combine_summaries(ordered_texts, scene_ids=ordered, feature_map=feature_map)
     word_count = len(combined_text.split())
 
     if style == "concise":
@@ -302,9 +367,13 @@ def build_recap(ranked_scenes, scene_summaries, scene_features=None, summary_sty
         max_len, min_len = 350, 100
 
     if word_count > 900:
-        return hierarchical_summarization(combined_text, max_length=max_len, min_length=min_len)
+        summary = hierarchical_summarization(combined_text, max_length=max_len, min_length=min_len)
+    else:
+        # Inject context for final pass
+        input_text = _inject_system_context(combined_text)
+        summary = generate_final_recap(input_text, max_length=max_len, min_length=min_len)
 
-    return generate_final_recap(combined_text, max_length=max_len, min_length=min_len)
+    return _deduplicate_sentences(summary)
 
 
 def save_recap_outputs(recap_text):

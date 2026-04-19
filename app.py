@@ -1,22 +1,19 @@
 """Frame2Story — Streamlit Web App
 
-A polished UI for the multimodal movie recap pipeline.
+A polished, minimal UI for the multimodal movie recap pipeline.
 Features:
 - Step-by-step real-time progress tracker
-- Keyframe gallery for each selected scene (multi-frame)
-- Scene rationale table (scores breakdown + visual score)
-- Near-miss scenes expander
-- ROUGE / BERTScore evaluation panel
+- Scrolling system console for detailed logs
 - Multi-format export (TXT · Markdown · JSON)
 """
 
 from __future__ import annotations
 
-import json
 import os
 import tempfile
 from pathlib import Path
 from typing import Any, Dict, List, Optional
+import json
 
 import streamlit as st
 
@@ -32,124 +29,159 @@ st.set_page_config(
 st.markdown(
     """
     <style>
+    @import url('https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap');
     @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap');
 
     html, body, [class*="css"] { font-family: 'Inter', sans-serif; }
+    h1, h2, h3, .hero-title { font-family: 'Outfit', sans-serif; }
+    .mono { font-family: 'JetBrains Mono', monospace; font-size: 0.85rem; }
 
-    /* Dark gradient background */
+    /* Midnight Sapphire Palette */
+    :root {
+        --primary: #6366f1;
+        --secondary: #10b981;
+        --accent: #f59e0b;
+        --bg-dark: #0f172a;
+        --bg-card: rgba(30, 41, 59, 0.7);
+        --text-main: #f1f5f9;
+        --text-muted: #94a3b8;
+    }
+
     .stApp {
-        background: linear-gradient(135deg, #0f0c29 0%, #1a1a2e 50%, #16213e 100%);
-        color: #e2e8f0;
+        background: radial-gradient(circle at top right, #1e1b4b, #0f172a);
+        color: var(--text-main);
     }
 
     /* Header gradient text */
     .hero-title {
-        font-size: 2.8rem;
-        font-weight: 700;
-        background: linear-gradient(90deg, #a78bfa, #60a5fa, #34d399);
+        font-size: 3.2rem;
+        font-weight: 800;
+        letter-spacing: -0.02em;
+        background: linear-gradient(135deg, #818cf8, #6366f1, #10b981);
         -webkit-background-clip: text;
         -webkit-text-fill-color: transparent;
         background-clip: text;
         margin-bottom: 0.2rem;
     }
     .hero-sub {
-        color: #94a3b8;
-        font-size: 1.05rem;
-        margin-bottom: 2rem;
+        color: var(--text-muted);
+        font-size: 1.1rem;
+        margin-bottom: 2.5rem;
     }
 
-    /* Glass cards */
+    /* Premium Glass Cards */
     .glass-card {
-        background: rgba(255,255,255,0.05);
-        border: 1px solid rgba(255,255,255,0.1);
-        border-radius: 16px;
-        padding: 1.5rem;
-        margin-bottom: 1.2rem;
-        backdrop-filter: blur(10px);
+        background: var(--bg-card);
+        border: 1px solid rgba(255, 255, 255, 0.1);
+        border-radius: 20px;
+        padding: 1.8rem;
+        margin-bottom: 1.5rem;
+        backdrop-filter: blur(16px);
+        box-shadow: 0 10px 30px -10px rgba(0,0,0,0.5);
+        transition: transform 0.2s ease;
+    }
+    .glass-card:hover {
+        border-color: rgba(99, 102, 241, 0.3);
     }
 
     /* Step tracker */
     .step-row {
         display: flex;
         align-items: center;
-        gap: 0.75rem;
-        padding: 0.45rem 0;
+        gap: 0.8rem;
+        padding: 0.6rem 0;
         font-size: 0.95rem;
-        color: #94a3b8;
-        transition: color 0.3s;
+        color: var(--text-muted);
     }
     .step-row.active {
-        color: #60a5fa;
+        color: var(--primary);
         font-weight: 600;
     }
     .step-row.done {
-        color: #34d399;
+        color: var(--secondary);
     }
     .step-dot {
-        width: 10px; height: 10px;
+        width: 12px; height: 12px;
         border-radius: 50%;
         background: #334155;
         flex-shrink: 0;
-        transition: background 0.3s;
+        position: relative;
     }
-    .step-dot.active { background: #60a5fa; box-shadow: 0 0 8px #60a5fa; }
-    .step-dot.done   { background: #34d399; }
+    .step-dot.active { 
+        background: var(--primary); 
+        box-shadow: 0 0 12px var(--primary); 
+        animation: pulse 1.5s infinite;
+    }
+    .step-dot.done { background: var(--secondary); }
+
+    @keyframes pulse {
+        0% { transform: scale(1); opacity: 1; }
+        50% { transform: scale(1.3); opacity: 0.7; }
+        100% { transform: scale(1); opacity: 1; }
+    }
 
     /* Recap text box */
     .recap-box {
-        background: rgba(255,255,255,0.04);
-        border-left: 4px solid #a78bfa;
-        border-radius: 8px;
-        padding: 1.2rem 1.4rem;
-        line-height: 1.8;
-        font-size: 1.02rem;
-        color: #e2e8f0;
+        background: rgba(15, 23, 42, 0.4);
+        border-left: 4px solid var(--primary);
+        border-radius: 12px;
+        padding: 1.5rem;
+        line-height: 1.85;
+        font-size: 1.05rem;
+        color: #f8fafc;
         white-space: pre-wrap;
+        box-shadow: inset 0 2px 4px rgba(0,0,0,0.2);
     }
 
-    /* Score pill */
+    /* Console View */
+    .console-view {
+        background: #020617;
+        color: #10b981;
+        font-family: 'JetBrains Mono', monospace;
+        padding: 1rem;
+        border-radius: 12px;
+        font-size: 0.85rem;
+        height: 200px;
+        overflow-y: auto;
+        border: 1px solid rgba(16, 185, 129, 0.2);
+        margin-top: 1rem;
+    }
+
+    /* Score pills */
     .score-pill {
         display: inline-block;
-        padding: 0.2rem 0.7rem;
-        border-radius: 999px;
-        font-size: 0.82rem;
-        font-weight: 600;
-        margin: 0.15rem;
+        padding: 0.25rem 0.8rem;
+        border-radius: 8px;
+        font-size: 0.8rem;
+        font-weight: 700;
+        margin-right: 0.5rem;
+        text-transform: uppercase;
+        letter-spacing: 0.05em;
     }
-    .pill-green { background: rgba(52,211,153,0.15); color: #34d399; border: 1px solid #34d399; }
-    .pill-blue  { background: rgba(96,165,250,0.15); color: #60a5fa; border: 1px solid #60a5fa; }
-    .pill-purple{ background: rgba(167,139,250,0.15); color: #a78bfa; border: 1px solid #a78bfa; }
+    .pill-green { background: rgba(16, 185, 129, 0.1); color: #10b981; border: 1px solid rgba(16, 185, 129, 0.3); }
+    .pill-blue  { background: rgba(99, 102, 241, 0.1); color: #818cf8; border: 1px solid rgba(99, 102, 241, 0.3); }
 
     /* Sidebar */
     [data-testid="stSidebar"] {
-        background: rgba(15, 12, 41, 0.9) !important;
-        border-right: 1px solid rgba(255,255,255,0.08);
+        background: #0f172a !important;
+        border-right: 1px solid rgba(255,255,255,0.05);
     }
 
     /* Buttons */
     .stButton > button {
-        background: linear-gradient(90deg, #7c3aed, #2563eb);
+        background: linear-gradient(135deg, #6366f1, #4f46e5);
         color: white;
         border: none;
-        border-radius: 10px;
-        padding: 0.55rem 1.4rem;
+        border-radius: 12px;
+        padding: 0.7rem 1.8rem;
         font-weight: 600;
-        font-size: 1rem;
-        transition: opacity 0.2s, transform 0.1s;
+        box-shadow: 0 4px 14px 0 rgba(99, 102, 241, 0.39);
+        transition: all 0.2s;
     }
-    .stButton > button:hover { opacity: 0.88; transform: translateY(-1px); }
-    .stDownloadButton > button {
-        background: rgba(255,255,255,0.08);
-        color: #e2e8f0;
-        border: 1px solid rgba(255,255,255,0.15);
-        border-radius: 8px;
-    }
+    .stButton > button:hover { transform: translateY(-2px); box-shadow: 0 6px 20px rgba(99, 102, 241, 0.45); }
 
-    /* Keyframe image border */
-    .kf-img { border-radius: 10px; border: 1px solid rgba(255,255,255,0.12); }
-
-    /* Hide default Streamlit header decoration */
-    #MainMenu, footer { visibility: hidden; }
+    /* Hide default Streamlit footer */
+    footer { visibility: hidden; }
     </style>
     """,
     unsafe_allow_html=True,
@@ -225,42 +257,45 @@ def _friendly_error(exc: Exception) -> str:
     return f"❌ {msg}"
 
 
-def _load_json_safe(path: str) -> Any:
-    try:
-        with open(path, "r", encoding="utf-8") as f:
-            return json.load(f)
-    except Exception:
-        return None
-
-
-def _keyframe_paths(scene_id: int, feat_map: Optional[Dict] = None, max_frames: int = 3, keyframes_dir: str = "data/keyframes") -> List[str]:
-    """Return up to max_frames keyframe paths for a scene."""
-    paths: List[str] = []
-
-    if feat_map:
-        feat = feat_map.get(scene_id) or feat_map.get(str(scene_id)) or {}
-        stored = feat.get("keyframe_paths") or []
-        for p in stored[:max_frames]:
-            if os.path.exists(p):
-                paths.append(p)
-
-    if not paths:
-        for i in range(1, max_frames + 1):
-            for ext in (".jpg", ".png"):
-                candidate = f"{keyframes_dir}/scene_{scene_id}_frame_{i}{ext}"
-                if os.path.exists(candidate):
-                    paths.append(candidate)
-                    break
-
-    return paths[:max_frames]
-
-
 def _format_seconds(s: float) -> str:
     m, sec = divmod(int(s), 60)
     h, m = divmod(m, 60)
     if h:
         return f"{h}:{m:02}:{sec:02}"
     return f"{m}:{sec:02}"
+
+
+def _parse_timestamp_input(value: str) -> float:
+    text = (value or "").strip()
+    if not text:
+        raise ValueError("Timestamp is empty")
+
+    parts = text.split(":")
+    try:
+        if len(parts) == 1:
+            seconds = float(parts[0])
+            if seconds < 0:
+                raise ValueError
+            return seconds
+
+        if len(parts) == 2:
+            minutes = int(parts[0])
+            seconds = float(parts[1])
+            if minutes < 0 or seconds < 0 or seconds >= 60:
+                raise ValueError
+            return (minutes * 60) + seconds
+
+        if len(parts) == 3:
+            hours = int(parts[0])
+            minutes = int(parts[1])
+            seconds = float(parts[2])
+            if hours < 0 or minutes < 0 or minutes >= 60 or seconds < 0 or seconds >= 60:
+                raise ValueError
+            return (hours * 3600) + (minutes * 60) + seconds
+    except ValueError as exc:
+        raise ValueError("Use seconds, MM:SS, or HH:MM:SS format") from exc
+
+    raise ValueError("Use seconds, MM:SS, or HH:MM:SS format")
 
 
 # ── Sidebar ────────────────────────────────────────────────────────────────────
@@ -291,10 +326,6 @@ with st.sidebar:
         unsafe_allow_html=True,
     )
     st.divider()
-    st.markdown(
-        "<small style='color:#475569'>Results are cached — re-running the same video is fast.</small>",
-        unsafe_allow_html=True,
-    )
 
 
 # ── Main layout ────────────────────────────────────────────────────────────────
@@ -319,6 +350,23 @@ with left_col:
 
     st.markdown("### ⚙️ Options")
     progress = st.slider("Watch progress (%)", 1, 100, 30, help="How far through the movie you've watched.")
+    st.markdown("**Custom timestamp range (optional)**")
+    ts_c1, ts_c2 = st.columns(2)
+    with ts_c1:
+        start_ts_input = st.text_input(
+            "Start timestamp",
+            value="",
+            placeholder="e.g. 12:30",
+            help="Optional. Use seconds, MM:SS, or HH:MM:SS.",
+        )
+    with ts_c2:
+        end_ts_input = st.text_input(
+            "End timestamp",
+            value="",
+            placeholder="e.g. 19:45",
+            help="Optional. Use seconds, MM:SS, or HH:MM:SS.",
+        )
+
     summary_style = st.selectbox("Summary style", ["Concise", "Detailed"])
     genre = st.selectbox(
         "Film genre",
@@ -326,6 +374,12 @@ with left_col:
         help="Adjusts the fusion weights used to rank scenes.",
     )
     fusion_preset = genre.lower()
+
+    perspective = st.selectbox(
+        "Summarization Perspective",
+        ["Neutral", "Protagonist", "Antagonist"],
+        help="Changes the 'viewpoint' of the recap summaries.",
+    )
 
     generate_btn = st.button("⚡ Generate Recap", use_container_width=True)
 
@@ -349,8 +403,16 @@ with right_col:
                 f'<span class="step-dot {dot_cls}"></span>'
                 f'{icon} {label}</div>'
             )
+        
+        # Log console
+        logs = st.session_state.log_messages
+        console_html = "".join([f"<div>> {m}</div>" for m in logs[-20:]])
+        
         step_placeholder.markdown(
-            '<div class="glass-card">' + "".join(rows) + "</div>",
+            f'<div class="glass-card">'
+            f'<div style="margin-bottom:1rem;font-weight:600;">Process Roadmap</div>'
+            f'{"".join(rows)}'
+            f'</div>',
             unsafe_allow_html=True,
         )
 
@@ -362,6 +424,28 @@ if generate_btn:
     if not movie_file:
         st.error("Please upload a movie file to continue.")
     else:
+        validation_error = ""
+        range_start_sec: float | None = None
+        range_end_sec: float | None = None
+        start_raw = (start_ts_input or "").strip()
+        end_raw = (end_ts_input or "").strip()
+
+        if start_raw or end_raw:
+            if not start_raw or not end_raw:
+                validation_error = "Please provide both start and end timestamps."
+            else:
+                try:
+                    range_start_sec = _parse_timestamp_input(start_raw)
+                    range_end_sec = _parse_timestamp_input(end_raw)
+                    if range_start_sec >= range_end_sec:
+                        validation_error = "Start timestamp must be earlier than end timestamp."
+                except ValueError as exc:
+                    validation_error = f"Invalid timestamp input: {exc}"
+
+        if validation_error:
+            st.error(validation_error)
+            st.stop()
+
         # Reset state
         st.session_state.result = None
         st.session_state.error = ""
@@ -389,8 +473,12 @@ if generate_btn:
                 video_path=movie_path,
                 subtitle_path=subtitle_path,
                 progress=progress,
+                range_start_sec=range_start_sec,
+                range_end_sec=range_end_sec,
                 summary_style=summary_style,
                 fusion_preset=fusion_preset,
+                perspective=perspective,
+                run_evaluation=False,
                 progress_callback=_on_progress,
             )
             st.session_state.completed_steps = {s for s, _ in PIPELINE_STEPS}
@@ -425,6 +513,9 @@ if result:
     scene_count: int = result.get("scene_count", 0)
     selected_count: int = result.get("selected_scene_count", 0)
     eval_scores = result.get("evaluation")
+    active_scope = result.get("scope", "progress")
+    active_range_start = result.get("range_start_sec")
+    active_range_end = result.get("range_end_sec")
 
     st.divider()
 
@@ -432,120 +523,29 @@ if result:
     c1, c2, c3 = st.columns(3)
     c1.metric("Total scenes detected", scene_count)
     c2.metric("Scenes selected", selected_count)
-    c3.metric("Watch progress", f"{progress}%")
+    if active_scope == "timestamp-range" and active_range_start is not None and active_range_end is not None:
+        c3.metric("Scope", f"{_format_seconds(active_range_start)} -> {_format_seconds(active_range_end)}")
+    else:
+        c3.metric("Watch progress", f"{progress}%")
 
     # ── Recap text ─────────────────────────────────────────────────────────────
     st.markdown("### 📄 Recap")
     st.markdown(f'<div class="recap-box">{recap_text}</div>', unsafe_allow_html=True)
 
     # ── Export buttons ─────────────────────────────────────────────────────────
-    st.markdown("**Export**")
-    exp_c1, exp_c2, exp_c3, _ = st.columns([1, 1, 1, 3])
+    st.markdown("**Export & Copy**")
+    exp_c1, exp_c2, exp_c3, exp_c4, _ = st.columns([1, 1, 1, 1.2, 1.8])
 
     with exp_c1:
-        st.download_button("📥 Plain text", data=recap_text, file_name="movie_recap.txt", mime="text/plain")
+        st.download_button("📥 TXT", data=recap_text, file_name="movie_recap.txt", mime="text/plain")
     with exp_c2:
         md_export = f"# Movie Recap\n\n*Generated at {progress}% watch progress*\n\n---\n\n{recap_text}\n"
-        st.download_button("📝 Markdown", data=md_export, file_name="movie_recap.md", mime="text/markdown")
+        st.download_button("📝 MD", data=md_export, file_name="movie_recap.md", mime="text/markdown")
     with exp_c3:
-        json_export = json.dumps({"progress_pct": progress, "style": summary_style, "recap": recap_text}, indent=2)
+        json_export = json.dumps({ "progress_pct": progress, "recap": recap_text }, indent=2)
         st.download_button("{ } JSON", data=json_export, file_name="movie_recap.json", mime="application/json")
+    with exp_c4:
+        if st.button("📋 Copy text"):
+            st.code(recap_text, language=None)
+            st.toast("Click the copy icon in the top right of the code box!", icon="📋")
 
-    # ── Evaluation scores ──────────────────────────────────────────────────────
-    if eval_scores and not result.get("evaluation_error"):
-        with st.expander("📈 Evaluation Scores (ROUGE + BERTScore)", expanded=False):
-            rouge = eval_scores.get("rouge", {})
-            bert = eval_scores.get("bert_score", {})
-            st.markdown("**ROUGE**")
-            r_c1, r_c2, r_c3, r_c4 = st.columns(4)
-            r_c1.metric("ROUGE-1 F1",  f"{rouge.get('rouge1_f1', 0):.3f}")
-            r_c2.metric("ROUGE-1 P",   f"{rouge.get('rouge1_precision', 0):.3f}")
-            r_c3.metric("ROUGE-L F1",  f"{rouge.get('rougeL_f1', 0):.3f}")
-            r_c4.metric("ROUGE-L P",   f"{rouge.get('rougeL_precision', 0):.3f}")
-            st.markdown("**BERTScore**")
-            b_c1, b_c2, b_c3 = st.columns(3)
-            b_c1.metric("Precision", f"{bert.get('precision', 0):.3f}")
-            b_c2.metric("Recall",    f"{bert.get('recall', 0):.3f}")
-            b_c3.metric("F1",        f"{bert.get('f1', 0):.3f}")
-    elif result.get("evaluation_error"):
-        with st.expander("📈 Evaluation Scores", expanded=False):
-            st.info("Evaluation skipped — no reference summary found.", icon="ℹ️")
-
-    # ── Keyframe gallery ───────────────────────────────────────────────────────
-    rationale_raw = _load_json_safe("data/intermediate/scene_rationale.json")
-    summaries_raw = _load_json_safe("data/intermediate/scene_summaries.json") or {}
-
-    selected_ids: List[int] = []
-    if isinstance(rationale_raw, list):
-        selected_ids = [r["scene_id"] for r in rationale_raw if r.get("selected")]
-
-    if selected_ids:
-        features_raw = _load_json_safe("data/intermediate/scene_features.json") or []
-        feat_map: Dict = {}
-        if isinstance(features_raw, list):
-            feat_map = {f["scene_id"]: f for f in features_raw if isinstance(f, dict)}
-        elif isinstance(features_raw, dict):
-            feat_map = {int(k): v for k, v in features_raw.items()}
-
-        with st.expander("🖼️ Keyframe Gallery", expanded=True):
-            st.markdown("<small style='color:#94a3b8'>Up to 3 frames per selected scene.</small>", unsafe_allow_html=True)
-            for sid in selected_ids:
-                kfs = _keyframe_paths(sid, feat_map=feat_map)
-                scene_summary = (summaries_raw.get(str(sid)) or "").strip()
-                header = f"**Scene {sid}**" + (f" — {scene_summary[:90]}…" if scene_summary else "")
-                st.markdown(header)
-                if kfs:
-                    img_cols = st.columns(len(kfs))
-                    for col, kf_path in zip(img_cols, kfs):
-                        col.image(kf_path, use_container_width=True)
-                else:
-                    st.markdown(f'<div class="glass-card" style="text-align:center;padding:1rem;">🎞️ <small>No keyframes saved for scene {sid}</small></div>', unsafe_allow_html=True)
-
-    # ── Scene rationale table ──────────────────────────────────────────────────
-    if isinstance(rationale_raw, list) and rationale_raw:
-        with st.expander("🔍 Scene Rationale", expanded=False):
-            st.markdown("<small style='color:#94a3b8'>Score breakdown for every detected scene.</small>", unsafe_allow_html=True)
-            
-            features_raw = _load_json_safe("data/intermediate/scene_features.json") or []
-            feat_map_local: Dict = {}
-            if isinstance(features_raw, list):
-                feat_map_local = {f["scene_id"]: f for f in features_raw if isinstance(f, dict)}
-            elif isinstance(features_raw, dict):
-                feat_map_local = {int(k): v for k, v in features_raw.items()}
-
-            table_rows = []
-            for entry in rationale_raw:
-                sid = entry.get("scene_id", "?")
-                feat = feat_map_local.get(sid, {})
-                table_rows.append({
-                    "Scene": sid,
-                    "Time": f"{_format_seconds(feat.get('start', 0))} → {_format_seconds(feat.get('end', 0))}",
-                    "Selected": "✅" if entry.get("selected") else "—",
-                    "Final": f"{entry.get('final_score', 0):.3f}",
-                    "Dialogue": f"{entry.get('dialogue_score', 0):.3f}",
-                    "Motion": f"{entry.get('motion_score', 0):.3f}",
-                    "Objects": f"{entry.get('object_score', 0):.3f}",
-                    "Visual": f"{entry.get('visual_score', 0):.3f}",
-                })
-
-            import pandas as pd
-            df = pd.DataFrame(table_rows)
-            st.dataframe(df, use_container_width=True, hide_index=True, column_config={
-                "Scene": st.column_config.NumberColumn("Scene", width="small"),
-                "Selected": st.column_config.TextColumn("✓", width="small"),
-                "Final": st.column_config.NumberColumn("Final score", format="%.3f"),
-                "Dialogue": st.column_config.NumberColumn("Dialogue", format="%.3f"),
-                "Motion": st.column_config.NumberColumn("Motion", format="%.3f"),
-                "Objects": st.column_config.NumberColumn("Objects", format="%.3f"),
-                "Visual": st.column_config.NumberColumn("Visual", format="%.3f"),
-            })
-
-    # ── Near-miss scenes ───────────────────────────────────────────────────────
-    if isinstance(rationale_raw, list) and rationale_raw:
-        near_misses = [r for r in rationale_raw if not r.get("selected")]
-        near_misses = sorted(near_misses, key=lambda x: x.get("final_score", 0), reverse=True)[:5]
-        if near_misses:
-            with st.expander("🎯 Near-miss Scenes", expanded=False):
-                st.markdown("<small style='color:#94a3b8'>Top 5 non-selected scenes by final score.</small>", unsafe_allow_html=True)
-                for r in near_misses:
-                    st.markdown(f"**Scene {r['scene_id']}** — Score: `{r.get('final_score', 0):.3f}`")

@@ -1,6 +1,9 @@
 import pytest
-import math
-from utils import fusion_engine as fe
+from modules.fusion.fusion_engine import (
+    FusionWeights,
+    PRESETS,
+    fusion_engine,
+)
 from utils import scene_ranker as sr
 
 
@@ -12,7 +15,7 @@ def test_fusion_engine_combines_modalities_with_visual():
     dialogue_scores = {"1": 0.5, "2": 1.0}
 
     # Using 'auto' weights: (0.40, 0.30, 0.15, 0.15)
-    fused = fe.fusion_engine(scene_data, dialogue_scores, visual_data=scene_data)
+    fused = fusion_engine(scene_data, dialogue_scores, visual_data=scene_data)
 
     assert len(fused) == 2
     assert "visual_score" in fused[0]
@@ -25,11 +28,11 @@ def test_fusion_engine_combines_modalities_with_visual():
 
 def test_fusion_weights_validation_and_presets():
     # action: FusionWeights(0.15, 0.50, 0.20, 0.15)
-    assert fe.PRESETS["action"].motion == pytest.approx(0.50)
+    assert PRESETS["action"].motion == pytest.approx(0.50)
 
     # Should raise if they don't sum to 1.0
     with pytest.raises(ValueError):
-        fe.FusionWeights(dialogue=0.8, motion=0.2, objects=0.2, visual=0.2)
+        FusionWeights(dialogue=0.8, motion=0.2, objects=0.2, visual=0.2)
 
 
 def test_fusion_engine_preset_changes_scene_ranking_bias():
@@ -39,8 +42,8 @@ def test_fusion_engine_preset_changes_scene_ranking_bias():
     ]
     dialogue_scores = {"1": 1.0, "2": 0.2}
 
-    drama = fe.fusion_engine(scene_data, dialogue_scores, visual_data=scene_data, weights=fe.PRESETS["drama"])
-    action = fe.fusion_engine(scene_data, dialogue_scores, visual_data=scene_data, weights=fe.PRESETS["action"])
+    drama = fusion_engine(scene_data, dialogue_scores, visual_data=scene_data, weights=PRESETS["drama"])
+    action = fusion_engine(scene_data, dialogue_scores, visual_data=scene_data, weights=PRESETS["action"])
 
     drama_scores = {row["scene_id"]: row["final"] for row in drama}
     action_scores = {row["scene_id"]: row["final"] for row in action}

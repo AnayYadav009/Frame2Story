@@ -32,10 +32,7 @@ def get_subtitle(
     if not os.path.exists(audio_path):
         raise RuntimeError("Audio extraction failed")
 
-    generated_subtitle = transcribe_audio(
-        audio_path,
-        progress_callback=progress_callback,
-    )
+    generated_subtitle = transcribe_audio(audio_path, progress_callback=progress_callback)
     if not generated_subtitle or not os.path.exists(generated_subtitle):
         raise RuntimeError("Subtitle generation failed: expected file not found")
 
@@ -43,6 +40,6 @@ def get_subtitle(
 
 
 if __name__ == "__main__":
-    video_path = "data/sample_video.mp4"
+    video_path = r"C:\Users\anayy\Downloads\Telegram Desktop\HIMYM_S01_E01.Tehmovies.ir.mkv"
     result = get_subtitle(video_path)
     print("Subtitle used:", result)

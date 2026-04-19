@@ -29,23 +29,33 @@ def get_keyframe_indices(scene, fps, frame_count):
     return [start_idx, mid_idx, end_idx]
 
 
-def get_scene_keyframes(video_path, scene, fps, frame_count):
-    """Return the three keyframes (first/middle/last) and their indices for one scene."""
-    frame_indices = get_keyframe_indices(scene, fps, frame_count)
-    frames = [get_frame_at_index(video_path, frame_idx) for frame_idx in frame_indices]
-    return frame_indices, frames
+def get_scene_keyframes(video_path, scene, fps, frame_count, reader=None):
+    """Return the three keyframes (first/middle/last) and their indices for one scene.
     
-def extract_keyframes(video_path, scenes, fps, frame_count, output_dir="data/keyframes"):
+    If 'reader' is provided (VideoReader instance), it will be used for efficient 
+    frame access.
+    """
+    frame_indices = get_keyframe_indices(scene, fps, frame_count)
+    
+    if reader:
+        frames = [reader.get_frame(frame_idx) for frame_idx in frame_indices]
+    else:
+        frames = [get_frame_at_index(video_path, frame_idx) for frame_idx in frame_indices]
+        
+    return frame_indices, frames
+
+def extract_keyframes(video_path, scenes, fps, frame_count, output_dir="data/keyframes", reader=None):
     os.makedirs(output_dir, exist_ok=True)
     
     for scene in scenes:
         scene_id = scene["scene_id"]
         
-        frame_indices, frames = get_scene_keyframes(video_path, scene, fps, frame_count)
+        frame_indices, frames = get_scene_keyframes(video_path, scene, fps, frame_count, reader=reader)
         
         for i, frame in enumerate(frames):
+            if frame is None:
+                continue
             filename = f"{output_dir}/scene_{scene_id}_frame_{i+1}.jpg"
-
             save_frame(frame, filename)
             
     print("Keyframes extracted successfully")

@@ -2,7 +2,6 @@ import os
 import subprocess
 
 def extract_audio(video_path, output_path = "data/audio.wav"):
-    
     if not os.path.exists(video_path):
         raise FileNotFoundError(f"Video not found: {video_path}")
     
@@ -10,17 +9,7 @@ def extract_audio(video_path, output_path = "data/audio.wav"):
     if output_dir:
         os.makedirs(output_dir, exist_ok=True)
 
-    command = [
-        "ffmpeg",
-        "-i",
-        video_path,
-        "-q:a",
-        "0",
-        "-map",
-        "a",
-        output_path,
-        "-y",
-    ]
+    command = ["ffmpeg","-i",video_path,"-q:a","0","-map","a",output_path,"-y"]
 
     try:
         subprocess.run(command, check=True, capture_output=True, text=True)
@@ -34,6 +23,6 @@ def extract_audio(video_path, output_path = "data/audio.wav"):
     return output_path
 
 if __name__ == "__main__":
-    video_path = "data/sample_video.mp4"
+    video_path = r"C:\Users\anayy\Downloads\Telegram Desktop\HIMYM_S01_E01.Tehmovies.ir.mkv"
     audio_path = extract_audio(video_path)
     print("Audio extracted to:", audio_path)

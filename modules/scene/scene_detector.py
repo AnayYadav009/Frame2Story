@@ -7,7 +7,6 @@ from scenedetect.detectors import ContentDetector
 def timecode_to_seconds(timecode):
     return timecode.get_seconds()
 
-
 def extract_scene_data(scene_list):
     scenes = []
     for i, (start, end) in enumerate(scene_list, start=1):

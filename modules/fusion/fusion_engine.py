@@ -19,10 +19,10 @@ from dataclasses import dataclass
 
 @dataclass(frozen=True)
 class FusionWeights:
-    dialogue: float = 0.40
-    motion:   float = 0.30
-    objects:  float = 0.15
-    visual:   float = 0.15
+    dialogue: float = 0.48
+    motion:   float = 0.20
+    objects:  float = 0.10
+    visual:   float = 0.22
 
     def __post_init__(self):
         total = self.dialogue + self.motion + self.objects + self.visual
@@ -31,15 +31,41 @@ class FusionWeights:
 
 
 PRESETS = {
-    # dialogue-heavy (balanced visual/motion support)
-    "auto":         FusionWeights(0.40, 0.30, 0.15, 0.15),
-    # story-driven: dialogue dominates, visual adds character colour
-    "drama":        FusionWeights(0.55, 0.15, 0.10, 0.20),
-    # action: motion & objects dominate; visual still meaningful
+    "auto":         FusionWeights(0.48, 0.20, 0.10, 0.22),
+    "drama":        FusionWeights(0.62, 0.08, 0.08, 0.22),
     "action":       FusionWeights(0.15, 0.50, 0.20, 0.15),
-    # documentary: narration + visual composition matter most
-    "documentary":  FusionWeights(0.45, 0.20, 0.15, 0.20),
+    "documentary":  FusionWeights(0.52, 0.12, 0.08, 0.28),
 }
+
+
+def detect_genre_preset(scene_data: list[dict], dialogue_data: dict) -> str:
+    """Infers the best genre preset from multimodal signals.
+    
+    Returns "action", "drama", or "auto" based on motion/dialogue distribution.
+    """
+    if not scene_data:
+        return "auto"
+
+    # Analyze motion intensity
+    max_motion = max((float(s.get("motion_score", 0.0)) for s in scene_data), default=1.0)
+    if max_motion <= 0:
+        motion_ratio = 0.0
+    else:
+        high_motion_count = sum(1 for s in scene_data if float(s.get("motion_score", 0.0)) / max_motion > 0.7)
+        motion_ratio = high_motion_count / len(scene_data)
+
+    # Analyze dialogue richness
+    dialogue_scores = [float(dialogue_data.get(str(s["scene_id"]), 0.0)) for s in scene_data]
+    avg_dialogue = sum(dialogue_scores) / len(dialogue_scores) if dialogue_scores else 0.0
+
+    # Prefer dialogue-led presets unless motion dominance is clearly strong.
+    if avg_dialogue >= 0.45:
+        return "drama"
+
+    if motion_ratio > 0.35 and avg_dialogue < 0.40:
+        return "action"
+
+    return "auto"
 
 
 def load_json(path):
@@ -57,8 +83,6 @@ def fusion_engine(
     scene_data,
     dialogue_data,
     visual_data=None,
-    # Legacy positional weight args kept for backward compat — ignored when
-    # `weights` is provided.
     w_dialogue=0.40,
     w_motion=0.30,
     w_object=0.15,

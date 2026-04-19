@@ -1,4 +1,3 @@
-import pytest
 
 from modules.summarization import extractive_summarizer as es
 

@@ -1,10 +1,9 @@
-from typing import Iterable, Optional, Sequence, Set
+from typing import Iterable, Optional, Sequence, Set, List, Any
 
 try:
     from ultralytics import YOLO
-except ImportError:  # pragma: no cover - import failure is runtime/environment specific
+except ImportError:  # pragma: no cover
     YOLO = None
-
 
 _MODEL = None
 
@@ -19,18 +18,43 @@ def get_model(model_name: str = "yolov8n.pt"):
     return _MODEL
 
 
-def detect_objects(image_or_frame, model_name: str = "yolov8n.pt", confidence: float = 0.25):
-    """Run YOLOv8n and return unique object labels for one image/frame."""
-    model = get_model(model_name=model_name)
-    results = model(image_or_frame, conf=confidence, verbose=False)
+def detect_objects_batch(
+    images_or_frames: List[Any], 
+    model_name: str = "yolov8n.pt", 
+    confidence: float = 0.25,
+    batch_size: int = 16
+) -> List[List[str]]:
+    """Run YOLOv8 on a list of images/frames and return labels for each.
+    
+    Uses internal batching for performance.
+    """
+    if not images_or_frames:
+        return []
 
-    detections = set()
-    for result in results:
+    model = get_model(model_name=model_name)
+    
+    # Process in chunks to avoid OOM on large videos if we pass thousands at once
+    all_results = []
+    for i in range(0, len(images_or_frames), batch_size):
+        chunk = images_or_frames[i : i + batch_size]
+        results = model(chunk, conf=confidence, verbose=False)
+        all_results.extend(results)
+
+    batch_detections = []
+    for result in all_results:
+        detections = set()
         for box in result.boxes:
             cls_id = int(box.cls[0])
             detections.add(model.names[cls_id])
+        batch_detections.append(sorted(detections))
 
-    return sorted(detections)
+    return batch_detections
+
+
+def detect_objects(image_or_frame, model_name: str = "yolov8n.pt", confidence: float = 0.25):
+    """Run YOLOv8n and return unique object labels for one image/frame."""
+    results = detect_objects_batch([image_or_frame], model_name=model_name, confidence=confidence)
+    return results[0] if results else []
 
 
 def _filter_relevant_objects(objects: Iterable[str], relevant_objects: Optional[Sequence[str]] = None) -> Set[str]:
@@ -48,20 +72,11 @@ def detect_scene_objects(
     relevant_objects: Optional[Sequence[str]] = None,
 ):
     """Aggregate object labels across multiple keyframes for one scene."""
+    batch_results = detect_objects_batch(images_or_frames, model_name=model_name, confidence=confidence)
+    
     scene_objects = set()
-
-    for sample in images_or_frames:
-        objects = detect_objects(sample, model_name=model_name, confidence=confidence)
+    for objects in batch_results:
         scene_objects.update(objects)
 
     filtered = _filter_relevant_objects(scene_objects, relevant_objects=relevant_objects)
     return sorted(filtered)
-
-
-if __name__ == "__main__":
-    images = [
-        "data/keyframes/scene_4_frame_1.jpg",
-        "data/keyframes/scene_5_frame_2.jpg",
-        "data/keyframes/scene_12_frame_3.jpg",
-    ]
-    print(detect_scene_objects(images))

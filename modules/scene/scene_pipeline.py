@@ -5,27 +5,40 @@ from typing import List, Dict, Any, Optional, Sequence
 
 from modules.visual.key_frame_extractor import load_scenes, get_scene_keyframes
 from modules.visual.motion_analyzer import compute_scene_motion, classify_motion
-from modules.visual.object_detector import detect_scene_objects
+from modules.visual.object_detector import detect_objects_batch, _filter_relevant_objects
 from modules.visual.visual_analyzer import compute_importance_from_features
 from modules.scene.scene_detector import save_scenes_to_json
-from modules.scene.scene_filter import get_filtered_scenes_for_progress
+from modules.scene.scene_filter import get_filtered_scenes_for_progress, get_filtered_scenes_for_time_range
 from utils.video_reader import read_video_properties, save_frame
-
 
 Scene = Dict[str, Any]
 
 
 def run_scene_pipeline(
     video_path: str,
-    progress_percentage: float,
+    progress_percentage: float | None = None,
+    start_time_sec: float | None = None,
+    end_time_sec: float | None = None,
     output_path: str = "data/scenes.json",
     threshold: float = 40.0,
 ) -> List[Scene]:
-    scenes = get_filtered_scenes_for_progress(
-        video_path=video_path,
-        progress_percentage=progress_percentage,
-        threshold=threshold,
-    )
+    if start_time_sec is not None or end_time_sec is not None:
+        if start_time_sec is None or end_time_sec is None:
+            raise ValueError("Both start_time_sec and end_time_sec are required for timestamp mode")
+        scenes = get_filtered_scenes_for_time_range(
+            video_path=video_path,
+            start_time_sec=float(start_time_sec),
+            end_time_sec=float(end_time_sec),
+            threshold=threshold,
+        )
+    else:
+        if progress_percentage is None:
+            raise ValueError("progress_percentage is required when timestamp range is not provided")
+        scenes = get_filtered_scenes_for_progress(
+            video_path=video_path,
+            progress_percentage=progress_percentage,
+            threshold=threshold,
+        )
 
     output_file = Path(output_path)
     output_file.parent.mkdir(parents=True, exist_ok=True)
@@ -39,12 +52,12 @@ def compute_scene_features(
     output_path: str = "output/scene_features.json",
     keyframes_dir: str = "data/keyframes",
     save_keyframes: bool = True,
+    cleanup_keyframes: bool = True,
     motion_sample_step_sec: float = 1.0,
     yolo_model_name: str = "yolov8n.pt",
     yolo_confidence: float = 0.25,
     relevant_objects: Optional[Sequence[str]] = None,
 ) -> List[Scene]:
-    """Run Week 2 visual pipeline: keyframes -> motion -> objects per scene."""
     scenes = load_scenes(scenes_path)
     video_info = read_video_properties(video_path)
 
@@ -52,48 +65,86 @@ def compute_scene_features(
     frame_count = video_info["frame_count"]
 
     if save_keyframes:
-        Path(keyframes_dir).mkdir(parents=True, exist_ok=True)
+        kf_dir = Path(keyframes_dir)
+        kf_dir.mkdir(parents=True, exist_ok=True)
+        if cleanup_keyframes:
+            for stale_kf in kf_dir.glob("scene_*frame*.jpg"):
+                try:
+                    stale_kf.unlink()
+                except OSError:
+                    pass
 
+    from utils.video_reader import VideoReader
+    
     scene_analysis = []
-    for scene in scenes:
-        scene_id = scene["scene_id"]
-        duration_seconds = max(0.0, float(scene["end"] - scene["start"]))
+    all_keyframes = []
 
-        keyframe_indices, keyframe_frames = get_scene_keyframes(video_path, scene, fps, frame_count)
-        keyframe_paths = []
+    # Phase 1: Keyframes and Motion (Serial because of reader seeking)
+    with VideoReader(video_path) as reader:
+        for idx, scene in enumerate(scenes):
+            scene_id = scene["scene_id"]
+            duration_seconds = max(0.0, float(scene["end"] - scene["start"]))
 
-        if save_keyframes:
-            for i, frame in enumerate(keyframe_frames, start=1):
-                keyframe_path = Path(keyframes_dir) / f"scene_{scene_id}_frame_{i}.jpg"
-                save_frame(frame, str(keyframe_path))
-                keyframe_paths.append(str(keyframe_path))
+            keyframe_indices, keyframe_frames = get_scene_keyframes(
+                video_path, scene, fps, frame_count, reader=reader
+            )
+            keyframe_paths = []
 
-        motion_score = float(compute_scene_motion(video_path,scene,fps,sample_step_sec=motion_sample_step_sec))
-        motion_level = classify_motion(motion_score)
-        
-        motion_score_normalized = min(max(motion_score / 50.0, 0.0), 1.0)
+            if save_keyframes:
+                for i, frame in enumerate(keyframe_frames, start=1):
+                    if frame is None:
+                        continue
+                    keyframe_path = Path(keyframes_dir) / f"scene_{scene_id}_frame_{i}.jpg"
+                    save_frame(frame, str(keyframe_path))
+                    keyframe_paths.append(str(keyframe_path))
 
-        objects = detect_scene_objects(
-            keyframe_frames,
+            motion_score = float(
+                compute_scene_motion(video_path, scene, fps, sample_step_sec=motion_sample_step_sec, reader=reader)
+            )
+            motion_level = classify_motion(motion_score)
+            motion_score_normalized = min(max(motion_score / 50.0, 0.0), 1.0)
+
+            # Store keyframes for batch YOLO later
+            start_batch_idx = len(all_keyframes)
+            valid_frames = [f for f in keyframe_frames if f is not None]
+            all_keyframes.extend(valid_frames)
+            end_batch_idx = len(all_keyframes)
+            
+            scene_analysis.append(
+                {
+                    "scene_id": scene_id,
+                    "start": scene["start"],
+                    "end": scene["end"],
+                    "duration_seconds": duration_seconds,
+                    "keyframe_indices": keyframe_indices,
+                    "keyframe_paths": keyframe_paths,
+                    "motion_score": motion_score,
+                    "motion_level": motion_level,
+                    "motion_score_normalized": motion_score_normalized,
+                    "batch_range": (start_batch_idx, end_batch_idx),
+                    "objects": [], # Fill later
+                }
+            )
+
+    if all_keyframes:
+        batch_results = detect_objects_batch(
+            all_keyframes,
             model_name=yolo_model_name,
-            confidence=yolo_confidence,
-            relevant_objects=relevant_objects,
+            confidence=yolo_confidence
         )
+        
+        for scene_data in scene_analysis:
+            start, end = scene_data.get("batch_range", (0, 0))
+            scene_labels = set()
+            for i in range(start, end):
+                scene_labels.update(batch_results[i])
+            
+            filtered = _filter_relevant_objects(scene_labels, relevant_objects=relevant_objects)
+            scene_data["objects"] = sorted(filtered)
 
-        scene_analysis.append(
-            {
-                "scene_id": scene_id,
-                "start": scene["start"],
-                "end": scene["end"],
-                "duration_seconds": duration_seconds,
-                "keyframe_indices": keyframe_indices,
-                "keyframe_paths": keyframe_paths,
-                "motion_score": motion_score,
-                "motion_level": motion_level,
-                "motion_score_normalized": motion_score_normalized,
-                "objects": objects,
-            }
-        )
+    for scene_data in scene_analysis:
+        if "batch_range" in scene_data:
+            scene_data.pop("batch_range")
 
     max_duration = max((scene["duration_seconds"] for scene in scene_analysis), default=0.0)
     for scene in scene_analysis:
@@ -119,11 +170,11 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--video", required=True, help="Path to input video file")
     parser.add_argument("--output", default="output/scene_features.json", help="Path to output JSON")
 
-    # Scene filter pipeline (Week 1 / Day 6 style)
     parser.add_argument("--progress", type=float, help="Progress percentage (0-100)")
+    parser.add_argument("--start-time", type=float, default=None, help="Optional start timestamp in seconds")
+    parser.add_argument("--end-time", type=float, default=None, help="Optional end timestamp in seconds")
     parser.add_argument("--threshold", type=float, default=40.0, help="ContentDetector threshold")
 
-    # Week 2 multimodal pipeline
     parser.add_argument("--scenes", default="data/scenes.json", help="Path to scenes JSON")
     parser.add_argument("--keyframes-dir", default="data/keyframes", help="Directory to store extracted keyframes")
     parser.add_argument("--no-save-keyframes", action="store_true", help="Do not write keyframes to disk")
@@ -138,12 +189,14 @@ def main() -> None:
     args = build_arg_parser().parse_args()
 
     if args.mode == "scene-filter":
-        if args.progress is None:
-            raise ValueError("--progress is required when --mode scene-filter")
+        if args.start_time is None and args.end_time is None and args.progress is None:
+            raise ValueError("Provide either --progress or --start-time/--end-time when --mode scene-filter")
 
         scenes = run_scene_pipeline(
             video_path=args.video,
             progress_percentage=args.progress,
+            start_time_sec=args.start_time,
+            end_time_sec=args.end_time,
             output_path=args.output,
             threshold=args.threshold,
         )
@@ -156,6 +209,7 @@ def main() -> None:
         output_path=args.output,
         keyframes_dir=args.keyframes_dir,
         save_keyframes=not args.no_save_keyframes,
+        cleanup_keyframes=True, # CLI always defaults to cleanup if extraction runs
         motion_sample_step_sec=args.motion_step,
         yolo_model_name=args.yolo_model,
         yolo_confidence=args.yolo_conf,

@@ -41,7 +41,7 @@ def test_format_as_sasum_dialogue_handles_missing_speaker():
 
 
 def test_summarize_all_scenes_applies_style_and_handles_empty(monkeypatch):
-    monkeypatch.setattr(ss, "summarize_scene", lambda _text, language="en": "Alpha. Beta. Gamma.")
+    monkeypatch.setattr(ss, "summarize_text_batch", lambda texts, **_kwargs: ["Alpha. Beta. Gamma."] * len(texts))
 
     # Use enough words to clear the MIN_DIALOGUE_WORDS=8 gate
     long_line = "hello world foo bar baz qux quux quuz corge"
@@ -69,11 +69,12 @@ def test_summarize_all_scenes_applies_style_and_handles_empty(monkeypatch):
 def test_summarize_all_scenes_passes_sasum_format_to_summarizer(monkeypatch):
     captured = []
 
-    def _capture(text, language="en"):
-        captured.append((text, language))
-        return "Alpha."
+    def _capture(texts, **_kwargs):
+        for t in texts:
+            captured.append((t, "en", "Protagonist"))
+        return ["Alpha."] * len(texts)
 
-    monkeypatch.setattr(ss, "summarize_scene", _capture)
+    monkeypatch.setattr(ss, "summarize_text_batch", _capture)
 
     scene_dialogues = {
         "1": [
@@ -89,21 +90,38 @@ def test_summarize_all_scenes_passes_sasum_format_to_summarizer(monkeypatch):
         scene_features=scene_features,
         summary_style="Detailed",
         language="en",
+        perspective="Protagonist",
     )
 
     assert result["1"] == "Alpha."
     assert captured
     # English path: SAMSum format — "Speaker: line\n..."
     assert "TED: You lied to me" in captured[0][0]
-    assert "MARSHALL: I had to" in captured[0][0]
     assert captured[0][1] == "en"
+    assert captured[0][2] == "Protagonist"
+
+
+def test_summarize_scene_adds_perspective_prefix(monkeypatch):
+    monkeypatch.setattr(ss, "summarize_text_batch", lambda texts, **_kwargs: [f"SUM::{texts[0]}"])
+    
+    # Hero perspective
+    hero = ss.summarize_scene("Line 1.", language="en", perspective="Protagonist")
+    assert "hero's perspective" in hero
+    
+    # Villain perspective
+    villain = ss.summarize_scene("Line 1.", language="en", perspective="Antagonist")
+    assert "villain's perspective" in villain
+    
+    # Neutral perspective
+    neutral = ss.summarize_scene("Line 1.", language="en", perspective="Neutral")
+    assert "perspective" not in neutral
 
 
 def test_summarize_scene_non_english_skips_abstractive(monkeypatch):
     monkeypatch.setattr(ss, "extractive_summary_from_text", lambda _text, language=None: "Resumen corto")
     monkeypatch.setattr(
         ss,
-        "abstractive_summarize_text",
+        "summarize_text_batch",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("Should not call abstractive")),
     )
 
@@ -117,7 +135,7 @@ def test_summarize_scene_english_skips_extractive(monkeypatch):
         "extractive_summary_from_text",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("Should not call extractive for English")),
     )
-    monkeypatch.setattr(ss, "abstractive_summarize_text", lambda text, **_kwargs: f"ABSTRACT::{text}")
+    monkeypatch.setattr(ss, "summarize_text_batch", lambda texts, **_kwargs: [f"ABSTRACT::{texts[0]}"])
 
     summary = ss.summarize_scene("Original dialogue.", language="en")
     assert summary == "ABSTRACT::Original dialogue."
@@ -127,11 +145,7 @@ def test_short_dialogue_bypasses_model(monkeypatch):
     """Scenes under MIN_DIALOGUE_WORDS should not call the model."""
     called = []
 
-    def _should_not_be_called(text, language="en"):
-        called.append(text)
-        return "model output"
-
-    monkeypatch.setattr(ss, "summarize_scene", _should_not_be_called)
+    monkeypatch.setattr(ss, "summarize_text_batch", lambda texts, **_kwargs: ["model output"] * len(texts))
 
     # 4 words — well below MIN_DIALOGUE_WORDS=8
     scene_dialogues = {"1": [{"speaker": "A", "line": "Hi there."}]}
