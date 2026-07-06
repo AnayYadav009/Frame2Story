@@ -23,6 +23,6 @@ def extract_audio(video_path, output_path = "data/audio.wav"):
     return output_path
 
 if __name__ == "__main__":
-    video_path = r"C:\Users\anayy\Downloads\Telegram Desktop\HIMYM_S01_E01.Tehmovies.ir.mkv"
+    video_path = "data/input/sample_video.mp4"
     audio_path = extract_audio(video_path)
     print("Audio extracted to:", audio_path)

@@ -28,18 +28,26 @@ def get_subtitle(
     if progress_callback:
         progress_callback("No subtitle file provided — generating via Whisper…")
 
-    audio_path = extract_audio(video_path)
-    if not os.path.exists(audio_path):
-        raise RuntimeError("Audio extraction failed")
+    audio_path = None
+    try:
+        audio_path = extract_audio(video_path)
+        if not os.path.exists(audio_path):
+            raise RuntimeError("Audio extraction failed")
 
-    generated_subtitle = transcribe_audio(audio_path, progress_callback=progress_callback)
-    if not generated_subtitle or not os.path.exists(generated_subtitle):
-        raise RuntimeError("Subtitle generation failed: expected file not found")
+        generated_subtitle = transcribe_audio(audio_path, progress_callback=progress_callback)
+        if not generated_subtitle or not os.path.exists(generated_subtitle):
+            raise RuntimeError("Subtitle generation failed: expected file not found")
 
-    return generated_subtitle
+        return generated_subtitle
+    finally:
+        if audio_path and os.path.exists(audio_path):
+            try:
+                os.unlink(audio_path)
+            except OSError:
+                pass
 
 
 if __name__ == "__main__":
-    video_path = r"C:\Users\anayy\Downloads\Telegram Desktop\HIMYM_S01_E01.Tehmovies.ir.mkv"
+    video_path = "data/input/sample_video.mp4"
     result = get_subtitle(video_path)
     print("Subtitle used:", result)

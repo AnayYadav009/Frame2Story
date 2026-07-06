@@ -25,6 +25,8 @@ from modules.evaluation.eval import evaluate_recap
 from modules.fusion.fusion_engine import PRESETS, fusion_engine, save_fusion_output, detect_genre_preset
 from utils.input_handler import get_subtitle
 from utils.scene_ranker import get_ranked_scenes, extract_scene_ids, save_selected_scenes
+from utils.translator import translate_text
+from utils.audio_generator import generate_tts_narration
 
 _RANKING_VERSION = "v5-robust-summaries"
 _FUSION_VERSION = _RANKING_VERSION
@@ -176,6 +178,9 @@ def run_full_pipeline(
     run_evaluation: bool = False,
     progress_callback: Callable[[str], None] | None = None,
     custom_weights: Any | None = None,
+    target_language: str = "English",
+    enable_tts: bool = False,
+    save_keyframes: bool = False,
 ) -> Dict[str, Any]:
     timings = {}
     
@@ -282,7 +287,7 @@ def run_full_pipeline(
                 scenes_path=str(scenes_path),
                 output_path=str(features_path),
                 keyframes_dir="data/keyframes",
-                save_keyframes=True,
+                save_keyframes=save_keyframes,
                 cleanup_keyframes=True,
             )
             _write_cache_key(features_path, scene_key)
@@ -475,6 +480,26 @@ def run_full_pipeline(
         json.dump({"movie_recap": final_recap}, f, indent=2)
     timings["final_recap"] = time.perf_counter() - t_start
 
+    recap_to_use = final_recap
+    translated_recap = None
+    if target_language and target_language.lower() != "english":
+        notify(f"Translating final recap to {target_language}...")
+        translated_recap = translate_text(final_recap, target_language)
+        recap_to_use = translated_recap
+        (final_output_dir / "final_recap_translated.txt").write_text(translated_recap, encoding="utf-8")
+
+    audio_narration_path = None
+    if enable_tts:
+        notify("Generating Text-to-Speech narration...")
+        try:
+            audio_narration_path = generate_tts_narration(
+                text=recap_to_use,
+                target_lang_name=target_language,
+                output_path=str(final_output_dir / "recap_narration.mp3")
+            )
+        except Exception as exc:
+            notify(f"Warning: Text-to-Speech generation failed: {exc}")
+
     eval_scores = None
     eval_error = None
     reference_text = _resolve_reference_text(scene_dialogues, ranked_scene_ids)
@@ -502,6 +527,8 @@ def run_full_pipeline(
         "range_end_sec": range_end_sec,
         "progress_percent": percent_progress,
         "final_recap": final_recap,
+        "translated_recap": translated_recap,
+        "audio_narration_path": audio_narration_path,
         "reference_text": reference_text,
         "evaluation": eval_scores,
         "evaluation_error": eval_error,
@@ -523,6 +550,9 @@ def run_pipeline(
     run_evaluation: bool = False,
     progress_callback: Callable[[str], None] | None = None,
     custom_weights: Any | None = None,
+    target_language: str = "English",
+    enable_tts: bool = False,
+    save_keyframes: bool = False,
 ) -> Dict[str, Any]:
     """Wrapper used by the Streamlit app.
 
@@ -543,6 +573,9 @@ def run_pipeline(
         run_evaluation=run_evaluation,
         progress_callback=progress_callback,
         custom_weights=custom_weights,
+        target_language=target_language,
+        enable_tts=enable_tts,
+        save_keyframes=save_keyframes,
     )
     # Convenience alias so any legacy caller doing result["recap"] still works.
     result.setdefault("recap", result.get("final_recap", ""))
@@ -565,6 +598,9 @@ def build_arg_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--output_dir", default="outputs", help="Final output directory")
     parser.add_argument("--eval", action="store_true", help="Enable ROUGE/BERTScore evaluation")
+    parser.add_argument("--target_lang", default="English", help="Recap translation language")
+    parser.add_argument("--tts", action="store_true", help="Generate Text-to-Speech audio narration")
+    parser.add_argument("--save_keyframes", action="store_true", help="Save extracted keyframes to disk")
     return parser
 
 
@@ -580,9 +616,12 @@ def main() -> None:
         fusion_preset=args.fusion_preset,
         output_dir=args.output_dir,
         run_evaluation=args.eval,
+        target_language=args.target_lang,
+        enable_tts=args.tts,
+        save_keyframes=args.save_keyframes,
     )
     print("\nFINAL RECAP:\n")
-    print(result["final_recap"])
+    print(result["translated_recap"] if result.get("translated_recap") else result["final_recap"])
 
 
 if __name__ == "__main__":

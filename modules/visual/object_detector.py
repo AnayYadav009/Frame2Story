@@ -5,17 +5,17 @@ try:
 except ImportError:  # pragma: no cover
     YOLO = None
 
-_MODEL = None
+_MODELS = {}
 
 
 def get_model(model_name: str = "yolov8n.pt"):
     """Lazy-load YOLO model so importing this module stays lightweight."""
-    global _MODEL
-    if _MODEL is None:
+    global _MODELS
+    if model_name not in _MODELS:
         if YOLO is None:
             raise ImportError("ultralytics is not installed. Add it to requirements and install dependencies.")
-        _MODEL = YOLO(model_name)
-    return _MODEL
+        _MODELS[model_name] = YOLO(model_name)
+    return _MODELS[model_name]
 
 
 def detect_objects_batch(

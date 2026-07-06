@@ -381,6 +381,18 @@ with left_col:
         help="Changes the 'viewpoint' of the recap summaries.",
     )
 
+    target_language = st.selectbox(
+        "Translation Language",
+        ["English", "Spanish", "French", "German", "Italian", "Portuguese", "Hindi", "Bengali", "Chinese (Simplified)", "Japanese", "Korean"],
+        help="Translate the final recap text to the selected language.",
+    )
+
+    enable_tts = st.toggle(
+        "🎙️ Enable Audio Narration (TTS)",
+        value=False,
+        help="Generate an audio reading of your recap using Text-to-Speech.",
+    )
+
     generate_btn = st.button("⚡ Generate Recap", use_container_width=True)
 
 with right_col:
@@ -412,6 +424,7 @@ with right_col:
             f'<div class="glass-card">'
             f'<div style="margin-bottom:1rem;font-weight:600;">Process Roadmap</div>'
             f'{"".join(rows)}'
+            f'<div class="console-view">{console_html}</div>'
             f'</div>',
             unsafe_allow_html=True,
         )
@@ -480,6 +493,8 @@ if generate_btn:
                 perspective=perspective,
                 run_evaluation=False,
                 progress_callback=_on_progress,
+                target_language=target_language,
+                enable_tts=enable_tts,
             )
             st.session_state.completed_steps = {s for s, _ in PIPELINE_STEPS}
             st.session_state.current_step = None
@@ -509,7 +524,7 @@ if st.session_state.error:
 result: Optional[Dict[str, Any]] = st.session_state.result
 
 if result:
-    recap_text: str = (result.get("final_recap") or result.get("recap") or "").strip()
+    recap_text: str = (result.get("translated_recap") or result.get("final_recap") or result.get("recap") or "").strip()
     scene_count: int = result.get("scene_count", 0)
     selected_count: int = result.get("selected_scene_count", 0)
     eval_scores = result.get("evaluation")
@@ -527,6 +542,12 @@ if result:
         c3.metric("Scope", f"{_format_seconds(active_range_start)} -> {_format_seconds(active_range_end)}")
     else:
         c3.metric("Watch progress", f"{progress}%")
+
+    # ── Audio Player ───────────────────────────────────────────────────────────
+    audio_path = result.get("audio_narration_path")
+    if audio_path and os.path.exists(audio_path):
+        st.markdown("### 🎙️ Audio Narration")
+        st.audio(audio_path, format="audio/mp3")
 
     # ── Recap text ─────────────────────────────────────────────────────────────
     st.markdown("### 📄 Recap")

@@ -18,3 +18,6 @@ scenedetect
 opencv-python
 ultralytics
 plotly
+faster-whisper
+gTTS
+deep-translator

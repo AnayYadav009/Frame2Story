@@ -1,6 +1,6 @@
-import whisper
 import os
 from typing import Callable, Optional
+from faster_whisper import WhisperModel
 
 
 def format_time(seconds):
@@ -16,7 +16,7 @@ def transcribe_audio(
     output_srt: str = "data/generated_subtitles.srt",
     progress_callback: Optional[Callable[[str], None]] = None,
 ) -> str:
-    """Transcribe audio to SRT using OpenAI Whisper.
+    """Transcribe audio to SRT using faster-whisper.
 
     Args:
         audio_path: Path to the audio file to transcribe.
@@ -28,28 +28,34 @@ def transcribe_audio(
         raise FileNotFoundError("Audio file not found")
 
     if progress_callback:
-        progress_callback("Loading Whisper model (base)…")
+        progress_callback("Loading faster-whisper model (base)…")
 
-    model = whisper.load_model("base")
+    try:
+        import torch
+        device = "cuda" if torch.cuda.is_available() else "cpu"
+        compute_type = "float16" if device == "cuda" else "int8"
+        model = WhisperModel("base", device=device, compute_type=compute_type)
+    except Exception:
+        model = WhisperModel("base", device="cpu", compute_type="int8")
 
     if progress_callback:
-        progress_callback("Transcribing audio with Whisper — this may take a few minutes…")
+        progress_callback("Transcribing audio with faster-whisper — this is optimized and fast…")
 
-    result = model.transcribe(audio_path)
+    segments, info = model.transcribe(audio_path, beam_size=5)
 
     os.makedirs(os.path.dirname(output_srt) if os.path.dirname(output_srt) else ".", exist_ok=True)
     with open(output_srt, "w", encoding="utf-8") as f:
-        for i, segment in enumerate(result["segments"]):
-            start = segment["start"]
-            end = segment["end"]
-            text = segment["text"]
+        for i, segment in enumerate(segments):
+            start = segment.start
+            end = segment.end
+            text = segment.text
 
             f.write(f"{i + 1}\n")
             f.write(f"{format_time(start)} --> {format_time(end)}\n")
             f.write(f"{text.strip()}\n\n")
 
     if progress_callback:
-        progress_callback("Whisper transcription complete.")
+        progress_callback("faster-whisper transcription complete.")
 
     return output_srt
 

@@ -154,6 +154,7 @@ def compute_scene_features(
             objects=scene["objects"],
             duration=scene["duration_seconds"],
             max_duration=max_duration,
+            relevant_objects=relevant_objects,
         )
 
     output_file = Path(output_path)

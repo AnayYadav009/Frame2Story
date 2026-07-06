@@ -20,11 +20,16 @@ data/intermediate/.cache_key
 data/keyframes/
 data/audio.wav
 data/generated_subtitles.srt
+data/*.mp4
+data/*.mkv
+data/*.wav
+data/*.srt
+data/*.json
+data/input/*.mp4
+data/input/*.mkv
 outputs/
 output/
 keyframes/
-data/input/*.mp4
-data/input/*.mkv
 
 # Local backups and archives
 backup/

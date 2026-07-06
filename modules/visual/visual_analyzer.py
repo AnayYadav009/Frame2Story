@@ -1,4 +1,3 @@
-import json
 
 def motion_to_score(motion):
     """Map motion class to normalized score used by importance formula."""
@@ -9,8 +8,11 @@ def motion_to_score(motion):
     return mapping.get(motion.lower(), 0.5)
 
 
-def object_score(objects):
-    """Estimate normalized object salience from detected labels."""
+def object_score(objects, relevant_objects=None):
+    """Estimate normalized object salience from detected labels.
+    
+    If relevant_objects is provided, matched objects receive a custom weight boost.
+    """
     weights = {
         "person": 0.5,
         "book": 0.3,
@@ -30,9 +32,13 @@ def object_score(objects):
     }
 
     score = 0
+    rel_set = {r.lower() for r in relevant_objects} if relevant_objects else set()
 
     for obj in objects:
-        score += weights.get(obj.lower(), 0.12)
+        w = weights.get(obj.lower(), 0.12)
+        if obj.lower() in rel_set:
+            w += 0.25
+        score += w
 
     return min(score, 1.0)
 
@@ -44,13 +50,13 @@ def normalize_duration(duration, max_duration):
     return duration / max_duration
 
 
-def compute_importance_from_features(motion_score, motion_level, objects, duration, max_duration):
+def compute_importance_from_features(motion_score, motion_level, objects, duration, max_duration, relevant_objects=None):
     """
     Compute scene importance using true multimodal fusion.
     """
 
     motion_component = motion_score
-    obj_component = object_score(objects)
+    obj_component = object_score(objects, relevant_objects=relevant_objects)
     obj_component = min(max(obj_component, 0.0), 1.0)
 
     duration_component = normalize_duration(duration, max_duration)
@@ -76,38 +82,12 @@ def compute_importance_from_features(motion_score, motion_level, objects, durati
     return round(importance, 3)
 
 
-def compute_importance(scene, max_duration):
+def compute_importance(scene, max_duration, relevant_objects=None):
     return compute_importance_from_features(
         motion_score=scene.get("motion_score_normalized", 0.5),
         motion_level=scene.get("motion", scene.get("motion_level", "MEDIUM")),
         objects=scene.get("objects", []),
         duration=scene.get("duration", scene.get("duration_seconds", 0)),
         max_duration=max_duration,
-    )
-
-def analyze_scenes(scene_data):
-    if not scene_data:
-        return []
-
-    max_duration = max(scene["duration"] for scene in scene_data)
-
-    results = []
-
-    for scene in scene_data:
-        importance = compute_importance(scene, max_duration)
-
-        scene_result = {
-            "scene_id": scene["scene_id"],
-            "motion": scene["motion"],
-            "objects": scene["objects"],
-            "importance": importance,
-        }
-
-        results.append(scene_result)
-
-    return results
-
-
-def save_visual_features(data, path="output/scene_features.json"):
-    with open(path, "w", encoding="utf-8") as f:
-        json.dump(data, f, indent=4)
+        relevant_objects=relevant_objects or scene.get("relevant_objects"),
+    )

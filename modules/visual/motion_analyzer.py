@@ -12,6 +12,28 @@ def compute_frame_difference(frame1, frame2):
     
     return score
 
+def compute_optical_flow_magnitude(frame1, frame2):
+    """Compute dense optical flow magnitude using Farneback algorithm on downsampled frames."""
+    try:
+        h, w = frame1.shape[:2]
+        new_w = 160
+        new_h = int(h * (new_w / w))
+        
+        small1 = cv2.resize(frame1, (new_w, new_h), interpolation=cv2.INTER_AREA)
+        small2 = cv2.resize(frame2, (new_w, new_h), interpolation=cv2.INTER_AREA)
+        
+        gray1 = cv2.cvtColor(small1, cv2.COLOR_BGR2GRAY)
+        gray2 = cv2.cvtColor(small2, cv2.COLOR_BGR2GRAY)
+        
+        flow = cv2.calcOpticalFlowFarneback(
+            gray1, gray2, None, 0.5, 3, 15, 3, 5, 1.2, 0
+        )
+        magnitude = np.sqrt(flow[..., 0]**2 + flow[..., 1]**2)
+        # Scale to align roughly with legacy motion score ranges
+        return float(np.mean(magnitude)) * 4.0
+    except Exception:
+        return compute_frame_difference(frame1, frame2)
+
 def sample_frames(video_path, start_sec, end_sec, fps, sample_step_sec=1.0, reader=None):
     frames = []
     current_time = start_sec
@@ -57,7 +79,7 @@ def compute_scene_motion(video_path, scene, fps, sample_step_sec=1.0, reader=Non
     diffs = []
     
     for i in range(len(frames) - 1):
-        diff = compute_frame_difference(frames[i], frames[i+1])
+        diff = compute_optical_flow_magnitude(frames[i], frames[i+1])
         diffs.append(diff)
         
     return np.mean(diffs)
