@@ -14,7 +14,7 @@ rouge-score
 bert-score
 numpy
 matplotlib
-scenedetect
+scenedetect<0.6.0
 opencv-python
 ultralytics
 plotly

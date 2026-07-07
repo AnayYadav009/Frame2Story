@@ -13,6 +13,10 @@ def extract_audio(video_path, output_path = "data/audio.wav"):
 
     try:
         subprocess.run(command, check=True, capture_output=True, text=True)
+    except FileNotFoundError as exc:
+        raise FileNotFoundError(
+            "FFmpeg executable not found. Please ensure FFmpeg is installed and added to your system PATH."
+        ) from exc
     except subprocess.CalledProcessError as exc:
         stderr_text = (exc.stderr or "").strip()
         raise RuntimeError(f"FFmpeg audio extraction failed: {stderr_text}") from exc
