@@ -1,92 +1,56 @@
-# Frame2Story
+# CineBuddy AI: Interactive Video Companion 🍿
 
-Frame2Story is a multimodal movie recap pipeline that generates a recap based on how much of a video has been watched.
+CineBuddy AI is a real-time, interactive video companion application. Play any movie or TV episode, pause at any timestamp, and chat with an AI assistant that has real-time context of the video **only up to your current playback timestamp**.
 
-Given a movie/video and watch progress, it:
-- Detects scenes up to the watched timestamp.
-- Extracts visual features (keyframes, motion, object detections).
-- Aligns subtitle dialogue to scenes.
-- Scores and ranks scenes using multimodal fusion.
-- Summarizes selected scenes and produces a final recap.
+Ask questions about characters, plot points, dialogue, or visual themes, and get instant explanations **without any spoilers** for parts of the video you haven't watched yet!
 
-The project includes both:
-- A command-line pipeline (`main_pipeline.py`)
-- A Streamlit app (`app.py`)
+---
 
-## Pipeline Overview
+## 🌟 Key Features
 
-1. Scene Detection + Progress Filter
-2. Visual Analysis
-3. Dialogue Alignment + Dialogue Scoring
-4. Multimodal Fusion + Scene Ranking
-5. Scene Summarization
-6. Final Recap Generation
+- **Direct AI Audio Listening (No Subtitles Needed)**: Uses a native server-side **FFmpeg engine** to extract high-quality audio slices on the fly. Gemini 3.5 Flash listens directly to spoken dialogue and character voices in real-time.
+- **Synced Subtitle Timeline (Optional)**: Supports standard subtitle files (`.srt` and `.vtt`) for synced text captions alongside video playback.
+- **Spoiler-Free AI Guardrails**: Strict safety rules ensure the AI never reveals plot points, twists, or character fates beyond your current playback timestamp.
+- **Automatic `.env` API Key Loading**: Automatically parses `.env` on server launch—no need to paste your API key into browser settings.
+- **Smart System Video Search**: Automatically locates matching video files across local directories (`c:\Anay\Miscellaneous`, `data/`, `Downloads`, `Videos`, etc.) using episode-aware path resolution.
+- **Ultra-Modern UI**: Sleek dark-mode dashboard styled with CSS glassmorphism, responsive grid layout, customizable personas (Helpful, Analytical, Sarcastic), and smooth micro-animations.
+- **Zero Python External Dependencies**: Built entirely using Python's standard library (`http.server`, `urllib`, `subprocess`).
 
-## Requirements
+---
 
-- Python 3.10+
-- FFmpeg in PATH (required when subtitles must be auto-generated from audio)
-- Enough RAM/VRAM for model inference (BART + YOLO)
+## 🚀 Quick Start
 
-Install dependencies:
+1. **Add Your Gemini API Key**:
+   Create a `.env` file in the root directory:
+   ```env
+   GEMINI_API_KEY=your_gemini_api_key_here
+   ```
 
-```bash
-pip install -r requirements.txt
+2. **Launch the Companion Server**:
+   ```bash
+   python companion_app/server.py
+   ```
+
+3. **Open the Web Interface**:
+   Navigate to [http://localhost:8000/](http://localhost:8000/) in your web browser.
+
+4. **Load & Play Media**:
+   - Click **Select Video File** and choose any video file (`.mp4`, `.mkv`, `.avi`, `.mov`, etc.).
+   - Play the video, pause at any timestamp, and ask CineBuddy questions in the chat sidebar!
+
+---
+
+## 📁 Project Structure
+
+```text
+Frame2Story/
+├── companion_app/
+│   ├── index.html     # Dashboard layout & controls
+│   ├── style.css      # Glassmorphic dark theme styles
+│   ├── app.js         # Playback tracker & API client
+│   └── server.py      # HTTP server, FFmpeg audio engine & Gemini proxy
+├── data/              # Folder for local video projects & subtitles
+├── .env               # Environment configuration (API keys)
+├── .gitignore         # Git ignore rules
+└── README.md          # Project documentation
 ```
-
-## Quick Start (CLI)
-
-Run the full pipeline:
-
-```bash
-python main_pipeline.py --video data/input/sample_video.mp4 --subtitle data/input/sample_himym.srt --progress 40 --output_dir outputs
-```
-
-Arguments:
-- `--video`: path to input video file
-- `--subtitle`: path to `.srt` subtitle file
-- `--progress`: watch progress percentage (0-100)
-- `--output_dir`: output root directory
-
-If you do not have subtitles, pass an empty subtitle path and the pipeline will try to generate subtitles via Whisper:
-
-```bash
-python main_pipeline.py --video data/input/sample_video.mp4 --subtitle "" --progress 40 --output_dir outputs
-```
-
-## Streamlit App
-
-Launch web app:
-
-```bash
-streamlit run app.py
-```
-
-Then upload:
-- Movie file (`.mp4` or `.mkv`)
-- Optional subtitle file (`.srt`)
-- Select watch progress and generate recap
-
-## Output Files
-
-Typical outputs include:
-- Intermediate data: `data/intermediate/*.json`
-- Ranked scene IDs: `outputs/scenes/ranked_scene_ids.json`
-- Scene summaries: `outputs/summaries/scene_summaries.json`
-- Final recap text/json:
-  - `outputs/final/final_recap.txt`
-  - `outputs/final/final_recap.json`
-
-## Notes
-
-- `transformers` is pinned to `<5` for compatibility.
-- `yolov8n.pt` can be provided locally or downloaded by Ultralytics when needed.
-- First run may be slower due to model downloads and warm-up.
-
-## Project Structure (High Level)
-
-- `modules/scene`: scene detection and progress filtering
-- `modules/visual`: keyframes, motion, object detection, visual scoring
-- `modules/dialogue`: subtitle alignment and dialogue scoring
-- `modules/summarization`: scene-level and final recap summarization
-- `utils/`: shared helpers (I/O, audio extraction, fusion, ranking)

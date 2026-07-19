@@ -1,23 +1,9 @@
-transformers<5
-torch
-streamlit
-pysrt
-nltk
-langdetect
-sumy
-tqdm
-sentencepiece
-tokenizers
-huggingface-hub
-sentence-transformers
-rouge-score
-bert-score
-numpy
-matplotlib
-scenedetect<0.6.0
-opencv-python
-ultralytics
-plotly
-faster-whisper
-gTTS
-deep-translator
+# CineBuddy: Interactive Video Companion
+#
+# This application is built using standard Python libraries and runs completely server-side and client-side without any third-party packages.
+#
+# To start the companion:
+#   python companion_app/server.py
+#
+# Open in your browser:
+#   http://localhost:8000/

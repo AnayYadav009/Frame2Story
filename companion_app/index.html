@@ -1,0 +1,152 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>CineBuddy - Interactive Video Companion</title>
+    <!-- Google Fonts -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700&family=Plus+Jakarta+Sans:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+    <!-- FontAwesome Icons -->
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <!-- Custom Style -->
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <div class="app-container">
+        <!-- Main Content Area (Video & Subtitles) -->
+        <main class="main-content">
+            <!-- Header Bar -->
+            <header class="app-header">
+                <div class="logo">
+                    <i class="fa-solid fa-film gradient-text"></i>
+                    <span class="gradient-text">CineBuddy AI</span>
+                </div>
+                <div class="header-actions">
+                    <button id="open-settings-btn" class="icon-btn" title="Settings">
+                        <i class="fa-solid fa-gear"></i>
+                    </button>
+                </div>
+            </header>
+
+            <!-- Video Player Wrapper -->
+            <section class="video-section">
+                <div class="video-container" id="video-container">
+                    <div class="video-placeholder" id="video-placeholder">
+                        <i class="fa-solid fa-play-circle placeholder-icon"></i>
+                        <p>Upload a video to get started</p>
+                        <label for="video-input" class="primary-btn">
+                            <i class="fa-solid fa-file-video"></i> Select Video File
+                        </label>
+                    </div>
+                    <video id="video-player" controls style="display: none;"></video>
+                </div>
+            </section>
+
+            <!-- Subtitle and Controls Area -->
+            <section class="controls-section">
+                <div class="file-pickers">
+                    <div class="file-input-group">
+                        <label for="video-input" class="secondary-btn" id="video-label">
+                            <i class="fa-solid fa-video"></i> Change Video
+                        </label>
+                        <input type="file" id="video-input" accept="video/*" style="display: none;">
+                    </div>
+                    <div class="file-input-group">
+                        <label for="subtitle-input" class="secondary-btn" id="subtitle-label">
+                            <i class="fa-solid fa-closed-captioning"></i> Subtitles (.srt, .vtt) [Optional]
+                        </label>
+                        <input type="file" id="subtitle-input" accept=".srt,.vtt" style="display: none;">
+                    </div>
+                    <button id="volume-toggle-btn" class="secondary-btn" title="Toggle Mute" style="display: none;">
+                        <i class="fa-solid fa-volume-xmark" id="volume-icon"></i> <span id="volume-text">Unmute</span>
+                    </button>
+                </div>
+
+                <!-- Sync Indicator and Live Subtitles -->
+                <div class="subtitles-panel">
+                    <div class="panel-header">
+                        <h3><i class="fa-solid fa-waveform"></i> Dialogue & Audio Context</h3>
+                        <span id="subtitle-status" class="status-badge active">Direct Video Audio Listening Active</span>
+                    </div>
+                    <div class="subtitle-display" id="subtitle-display">
+                        <p class="empty-subtitle-msg">Upload a video to ask questions directly from its spoken dialogue (no .srt required)!</p>
+                    </div>
+                </div>
+            </section>
+        </main>
+
+        <!-- Sidebar (Chat Interface) -->
+        <aside class="sidebar">
+            <div class="chat-container">
+                <div class="chat-header">
+                    <div class="assistant-info">
+                        <div class="avatar">
+                            <i class="fa-solid fa-robot"></i>
+                            <span class="active-dot"></span>
+                        </div>
+                        <div>
+                            <h4>CineBuddy Assistant</h4>
+                            <p class="subtext" id="context-info">No video active</p>
+                        </div>
+                    </div>
+                    <button id="clear-chat-btn" class="icon-btn" title="Clear Chat">
+                        <i class="fa-solid fa-trash-can"></i>
+                    </button>
+                </div>
+
+                <!-- Chat History -->
+                <div class="chat-history" id="chat-history">
+                    <div class="message system">
+                        <div class="msg-content">
+                            Welcome to CineBuddy! 🍿<br><br>
+                            Load a video and its subtitle file, pause at any moment, and ask me questions. I'll read the dialogue up to your paused timestamp to answer you <strong>without spoilers</strong>!
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Chat Input -->
+                <div class="chat-input-area">
+                    <div class="input-wrapper">
+                        <textarea id="chat-input" placeholder="Ask about the movie..." rows="1" disabled></textarea>
+                        <button id="send-btn" class="send-btn" disabled>
+                            <i class="fa-solid fa-paper-plane"></i>
+                        </button>
+                    </div>
+                </div>
+            </div>
+        </aside>
+    </div>
+
+    <!-- Settings Modal -->
+    <div class="modal-overlay" id="settings-modal">
+        <div class="modal">
+            <div class="modal-header">
+                <h3><i class="fa-solid fa-gear"></i> Settings</h3>
+                <button id="close-settings-btn" class="close-btn">&times;</button>
+            </div>
+            <div class="modal-body">
+                <div class="form-group">
+                    <label for="api-key-input">Gemini API Key</label>
+                    <input type="password" id="api-key-input" placeholder="Enter your Gemini API key...">
+                    <small class="help-text">This key is saved locally in your browser storage and used directly to make secure calls to the Gemini API.</small>
+                </div>
+                <div class="form-group">
+                    <label for="prompt-style-select">Companion Persona</label>
+                    <select id="prompt-style-select">
+                        <option value="helpful">Helpful Film Companion (Default)</option>
+                        <option value="analytical">Cinematic Analyzer (Deep narrative insights)</option>
+                        <option value="funny">Sarcastic Movie Buddy (Humorous commentary)</option>
+                    </select>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button id="save-settings-btn" class="primary-btn">Save Settings</button>
+            </div>
+        </div>
+    </div>
+
+    <script src="app.js"></script>
+</body>
+</html>
