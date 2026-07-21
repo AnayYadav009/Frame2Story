@@ -67,11 +67,11 @@
                 <!-- Sync Indicator and Live Subtitles -->
                 <div class="subtitles-panel">
                     <div class="panel-header">
-                        <h3><i class="fa-solid fa-waveform"></i> Dialogue & Audio Context</h3>
-                        <span id="subtitle-status" class="status-badge active">Direct Video Audio Listening Active</span>
+                        <h3><i class="fa-solid fa-eye"></i> Visual & Audio Multimodal Context</h3>
+                        <span id="subtitle-status" class="status-badge active">AI Vision & Audio Active 👁️🎙️</span>
                     </div>
                     <div class="subtitle-display" id="subtitle-display">
-                        <p class="empty-subtitle-msg">Upload a video to ask questions directly from its spoken dialogue (no .srt required)!</p>
+                        <p class="empty-subtitle-msg">Upload a video to ask questions directly from its visual scenes and audio dialogue!</p>
                     </div>
                 </div>
             </section>
@@ -139,6 +139,16 @@
                         <option value="analytical">Cinematic Analyzer (Deep narrative insights)</option>
                         <option value="funny">Sarcastic Movie Buddy (Humorous commentary)</option>
                     </select>
+                </div>
+                <div class="form-group">
+                    <label for="vision-frames-select">Visual Analysis Frame Density</label>
+                    <select id="vision-frames-select">
+                        <option value="5" selected>Balanced Adaptive (5 Frames - Recommended)</option>
+                        <option value="8">High Detail (8 Frames)</option>
+                        <option value="12">Maximum Precision (12 Frames)</option>
+                        <option value="0">Audio Only (Disable Vision)</option>
+                    </select>
+                    <small class="help-text">Uses quadratic time-warping to sample keyframe images densely in the seconds right before you pause.</small>
                 </div>
             </div>
             <div class="modal-footer">

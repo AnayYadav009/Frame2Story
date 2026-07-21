@@ -40,3 +40,7 @@ backup/**
 
 # IDE / local Streamlit config
 .streamlit/
+.vscode/
+
+# Server runtime logs
+companion_app/server.log

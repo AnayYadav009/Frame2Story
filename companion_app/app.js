@@ -6,12 +6,23 @@ let chatHistory = [];
 let isGenerating = false;
 let serverHasApiKey = false;
 
+// HTML sanitizer to prevent XSS injection via subtitles, errors, or API responses
+function escapeHtml(str) {
+    const div = document.createElement('div');
+    div.appendChild(document.createTextNode(str));
+    return div.innerHTML;
+}
+
+// Truncate filename with ellipsis only when needed
+function truncateFilename(name, maxLen = 15) {
+    return name.length > maxLen ? name.substring(0, maxLen) + '...' : name;
+}
+
 // DOM Elements
 const videoInput = document.getElementById('video-input');
 const subtitleInput = document.getElementById('subtitle-input');
 const videoPlayer = document.getElementById('video-player');
 const videoPlaceholder = document.getElementById('video-placeholder');
-const videoContainer = document.getElementById('video-container');
 const subtitleDisplay = document.getElementById('subtitle-display');
 const subtitleStatus = document.getElementById('subtitle-status');
 const chatHistoryContainer = document.getElementById('chat-history');
@@ -25,6 +36,7 @@ const settingsModal = document.getElementById('settings-modal');
 const saveSettingsBtn = document.getElementById('save-settings-btn');
 const apiKeyInput = document.getElementById('api-key-input');
 const promptStyleSelect = document.getElementById('prompt-style-select');
+const visionFramesSelect = document.getElementById('vision-frames-select');
 const videoLabel = document.getElementById('video-label');
 const subtitleLabel = document.getElementById('subtitle-label');
 const volumeToggleBtn = document.getElementById('volume-toggle-btn');
@@ -35,12 +47,16 @@ const volumeText = document.getElementById('volume-text');
 document.addEventListener('DOMContentLoaded', async () => {
     const savedApiKey = localStorage.getItem('GEMINI_API_KEY');
     const savedPersona = localStorage.getItem('CINEBUDDY_PERSONA');
+    const savedFrames = localStorage.getItem('CINEBUDDY_VISION_FRAMES');
     
     if (savedApiKey) {
         apiKeyInput.value = savedApiKey;
     }
     if (savedPersona) {
         promptStyleSelect.value = savedPersona;
+    }
+    if (savedFrames && visionFramesSelect) {
+        visionFramesSelect.value = savedFrames;
     }
 
     // Check if server loaded API key from .env file
@@ -66,15 +82,14 @@ videoInput.addEventListener('change', async (e) => {
     const file = e.target.files[0];
     if (file) {
         videoFile = file;
-        videoAudioBuffer = null;
         const fileUrl = URL.createObjectURL(file);
         videoPlayer.src = fileUrl;
         videoPlayer.muted = false;
         videoPlayer.volume = 1.0;
         videoPlayer.style.display = 'block';
         videoPlaceholder.style.display = 'none';
-        videoLabel.innerHTML = `<i class="fa-solid fa-video"></i> ${file.name.substring(0, 15)}...`;
-        contextInfo.textContent = `Video: ${file.name}`;
+        videoLabel.innerHTML = `<i class="fa-solid fa-video"></i> ${truncateFilename(file.name)}`;
+        contextInfo.textContent = `Video: ${escapeHtml(file.name)}`;
         
         // Show volume toggle button
         if (volumeToggleBtn) {
@@ -116,12 +131,12 @@ videoInput.addEventListener('change', async (e) => {
                 subtitleStatus.textContent = 'AI Audio Listening Active';
                 subtitleStatus.className = 'status-badge active';
                 const shortPath = regData.registeredPath ? regData.registeredPath.split(/[\\/]/).pop() : file.name;
-                subtitleDisplay.innerHTML = `<p class="empty-subtitle-msg">✨ Video audio linked: <strong>${shortPath}</strong>. Ask questions anytime without needing an .srt file!</p>`;
+                subtitleDisplay.innerHTML = `<p class="empty-subtitle-msg">✨ Video audio linked: <strong>${escapeHtml(shortPath)}</strong>. Ask questions anytime without needing an .srt file!</p>`;
             }
         } catch (err) {
             console.warn("Video server registration warning:", err);
             if (subtitleTimeline.length === 0) {
-                subtitleDisplay.innerHTML = `<p class="empty-subtitle-msg">Video loaded (${file.name}). Ask questions anytime!</p>`;
+                subtitleDisplay.innerHTML = `<p class="empty-subtitle-msg">Video loaded (${escapeHtml(file.name)}). Ask questions anytime!</p>`;
             }
         }
     }
@@ -137,7 +152,7 @@ subtitleInput.addEventListener('change', (e) => {
             
             subtitleStatus.textContent = 'Subtitles Loaded';
             subtitleStatus.className = 'status-badge active';
-            subtitleLabel.innerHTML = `<i class="fa-solid fa-closed-captioning"></i> ${file.name.substring(0, 15)}...`;
+            subtitleLabel.innerHTML = `<i class="fa-solid fa-closed-captioning"></i> ${truncateFilename(file.name)}`;
             
             // Show initial status message in subtitle pane
             subtitleDisplay.innerHTML = `<p class="empty-subtitle-msg">Synced: 0 of ${subtitleTimeline.length} lines loaded.</p>`;
@@ -154,6 +169,9 @@ closeSettingsBtn.addEventListener('click', () => settingsModal.classList.remove(
 saveSettingsBtn.addEventListener('click', () => {
     localStorage.setItem('GEMINI_API_KEY', apiKeyInput.value.trim());
     localStorage.setItem('CINEBUDDY_PERSONA', promptStyleSelect.value);
+    if (visionFramesSelect) {
+        localStorage.setItem('CINEBUDDY_VISION_FRAMES', visionFramesSelect.value);
+    }
     settingsModal.classList.remove('open');
     addSystemMessage("Settings saved successfully!");
 });
@@ -242,7 +260,7 @@ videoPlayer.addEventListener('timeupdate', () => {
     if (activeIndex !== currentSubtitleIndex) {
         currentSubtitleIndex = activeIndex;
         if (activeIndex !== -1) {
-            subtitleDisplay.innerHTML = `<p class="current-subtitle">${subtitleTimeline[activeIndex].text}</p>`;
+            subtitleDisplay.innerHTML = `<p class="current-subtitle">${escapeHtml(subtitleTimeline[activeIndex].text)}</p>`;
         } else {
             // Find the most recent past subtitle
             let pastIndex = -1;
@@ -253,7 +271,7 @@ videoPlayer.addEventListener('timeupdate', () => {
                 }
             }
             if (pastIndex !== -1) {
-                subtitleDisplay.innerHTML = `<p class="empty-subtitle-msg">(Dialogue ended: "${subtitleTimeline[pastIndex].text}")</p>`;
+                subtitleDisplay.innerHTML = `<p class="empty-subtitle-msg">(Dialogue ended: "${escapeHtml(subtitleTimeline[pastIndex].text)}")</p>`;
             } else {
                 subtitleDisplay.innerHTML = `<p class="empty-subtitle-msg">Playback running... (No dialogue yet)</p>`;
             }
@@ -360,6 +378,9 @@ async function sendMessage() {
     // Append temporary loading model message
     const loadingMsg = appendMessage('assistant', '<i class="fa-solid fa-spinner fa-spin"></i> CineBuddy is analyzing audio context & thinking...');
     
+    const numFrames = parseInt(localStorage.getItem('CINEBUDDY_VISION_FRAMES') || (visionFramesSelect ? visionFramesSelect.value : '5'), 10);
+    const enableVision = numFrames > 0;
+
     try {
         const response = await fetch('/api/chat', {
             method: 'POST',
@@ -367,11 +388,13 @@ async function sendMessage() {
                 'Content-Type': 'application/json'
             },
             body: JSON.stringify({
-                apiKey: apiKey,
+                ...(serverHasApiKey ? {} : { apiKey: apiKey }),
                 contents: contents,
                 systemInstruction: systemInstruction,
                 timestamp: currentTime,
-                hasSubtitles: subtitleTimeline.length > 0
+                hasSubtitles: subtitleTimeline.length > 0,
+                enableVision: enableVision,
+                numFrames: numFrames
             })
         });
         
@@ -389,7 +412,7 @@ async function sendMessage() {
             throw new Error(data.error?.message || data.error || 'Failed to generate response.');
         }
     } catch (err) {
-        loadingMsg.innerHTML = `<div class="msg-content" style="color: #ef4444;"><i class="fa-solid fa-triangle-exclamation"></i> Error: ${err.message}</div>`;
+        loadingMsg.innerHTML = `<div class="msg-content" style="color: #ef4444;"><i class="fa-solid fa-triangle-exclamation"></i> Error: ${escapeHtml(err.message)}</div>`;
     } finally {
         isGenerating = false;
         enableChatInputIfReady();
@@ -414,14 +437,14 @@ function getSystemInstruction(persona, timestamp, transcript) {
     
     const contextStr = transcript 
         ? `Dialogue Transcript so far:\n${transcript}` 
-        : `(Video Audio attached up to timestamp [${formatTime(timestamp)}])`;
+        : `(Video Audio recording slice and Visual video keyframe images attached up to timestamp [${formatTime(timestamp)}])`;
 
     return `You are CineBuddy, a ${personaStr}. The user is watching a video and has paused at playback time [${formatTime(timestamp)}].
 
-CRITICAL SAFETY RULES:
-1. You are provided with the spoken audio recording / dialogue transcript of the video UP TO this paused timestamp [${formatTime(timestamp)}].
-2. Answer the user's questions based on this video audio/transcript and your general knowledge of the movie/show.
-3. STRICT RULE: Do NOT reveal any characters, plot details, twists, deaths, or events that happen AFTER this timestamp (${formatTime(timestamp)}) in the story. Keep it completely spoiler-free!
+CRITICAL SAFETY & REASONING RULES:
+1. You are provided with BOTH spoken audio recording slices AND visual video keyframe images leading up to paused timestamp [${formatTime(timestamp)}].
+2. Use both the visual information (on-screen action, character expressions, props, visual text, fight/silent scenes) and spoken audio dialogue to answer the user's questions accurately.
+3. STRICT RULE: Do NOT reveal any characters, plot details, twists, deaths, or events that happen AFTER timestamp (${formatTime(timestamp)}) in the story. Keep it completely spoiler-free!
 4. If a user asks about something that hasn't happened yet, say: "That hasn't happened yet in the playback! Keep watching to find out!" or something similar.
 5. Be natural, conversational, and direct.
 
@@ -452,13 +475,28 @@ function scrollToBottom() {
     chatHistoryContainer.scrollTop = chatHistoryContainer.scrollHeight;
 }
 
-// Formats response markdown tags (e.g. bolding)
+// Formats response markdown tags for rich display
 function formatResponse(text) {
-    // Basic formatting for presentation
-    return text
-        .replace(/\n/g, '<br>')
-        .replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>')
-        .replace(/\*(.*?)\*/g, '<em>$1</em>');
+    // Escape HTML entities to prevent XSS, then apply formatting
+    let html = escapeHtml(text);
+    
+    // Code blocks (triple backtick)
+    html = html.replace(/```([\s\S]*?)```/g, '<pre style="background:rgba(255,255,255,0.05);padding:10px;border-radius:8px;overflow-x:auto;font-size:0.85rem;"><code>$1</code></pre>');
+    // Inline code
+    html = html.replace(/`([^`]+)`/g, '<code style="background:rgba(255,255,255,0.08);padding:2px 5px;border-radius:4px;font-size:0.85em;">$1</code>');
+    // Headers (### h3, ## h2, # h1)
+    html = html.replace(/^### (.+)$/gm, '<strong style="font-size:1.05em;">$1</strong>');
+    html = html.replace(/^## (.+)$/gm, '<strong style="font-size:1.1em;">$1</strong>');
+    html = html.replace(/^# (.+)$/gm, '<strong style="font-size:1.15em;">$1</strong>');
+    // Bold and italic
+    html = html.replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>');
+    html = html.replace(/\*(.*?)\*/g, '<em>$1</em>');
+    // Bullet lists
+    html = html.replace(/^[\-\*] (.+)$/gm, '• $1');
+    // Line breaks
+    html = html.replace(/\n/g, '<br>');
+    
+    return html;
 }
 
 // Custom Volume Controls to override browser limits or bugs

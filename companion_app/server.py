@@ -5,15 +5,33 @@ import base64
 import subprocess
 import urllib.request
 import urllib.error
+import time
+import re
+import socket
+import shutil
 from http.server import SimpleHTTPRequestHandler, HTTPServer
+from socketserver import ThreadingMixIn
 
 # Resolve paths and change directory to project root
 COMPANION_DIR = os.path.dirname(os.path.abspath(__file__))
 PROJECT_ROOT = os.path.dirname(COMPANION_DIR)
 DATA_DIR = os.path.join(PROJECT_ROOT, 'data')
+LOG_FILE = os.path.join(COMPANION_DIR, 'server.log')
 os.chdir(PROJECT_ROOT)
 
 ACTIVE_VIDEO_PATH = None
+
+def log_msg(msg):
+    """Log formatted timestamped messages to stdout and server.log file."""
+    timestamp = time.strftime('%Y-%m-%d %H:%M:%S')
+    formatted = f"[{timestamp}] {msg}"
+    print(formatted)
+    try:
+        with open(LOG_FILE, 'a', encoding='utf-8') as f:
+            f.write(formatted + '\n')
+            f.flush()
+    except Exception as e:
+        print(f"Logging file error: {e}")
 
 def load_env():
     """Manually parse .env file to load local environment keys."""
@@ -29,8 +47,8 @@ def load_env():
 # Automatically load environment variables on startup
 load_env()
 
-def extract_audio_slice_b64(video_path, end_sec, max_duration=180):
-    """Extract audio slice up to end_sec using FFmpeg and return 16kHz mono WAV Base64 string."""
+def extract_audio_slice_b64(video_path, end_sec, max_duration=30):
+    """Extract audio slice up to end_sec using FFmpeg and return 12kHz mono 32k MP3 Base64 string."""
     if not video_path or not os.path.exists(video_path):
         return None
     
@@ -40,27 +58,72 @@ def extract_audio_slice_b64(video_path, end_sec, max_duration=180):
         '-ss', str(start_sec),
         '-to', str(end_sec),
         '-i', video_path,
-        '-ar', '16000',
+        '-ar', '12000',
         '-ac', '1',
-        '-f', 'wav',
+        '-b:a', '32k',
+        '-f', 'mp3',
         '-'
     ]
     try:
         res = subprocess.run(cmd, capture_output=True, timeout=15)
         if res.returncode == 0 and res.stdout and len(res.stdout) > 100:
             return base64.b64encode(res.stdout).decode('utf-8')
+        elif res.returncode != 0 and res.stderr:
+            log_msg(f"[FFmpeg Audio Error] Exit code {res.returncode}: {res.stderr.decode('utf-8', errors='replace')[:200]}")
     except Exception as e:
-        print("FFmpeg extraction error:", e)
+        log_msg(f"[FFmpeg Error] {e}")
     return None
+
+def extract_visual_keyframes_b64(video_path, end_sec, num_frames=5, max_duration=30):
+    """Extract adaptively-spaced visual keyframe JPEG Base64 strings with high density near end_sec."""
+    if not video_path or not os.path.exists(video_path):
+        return []
+    
+    end_sec = float(end_sec)
+    start_sec = max(0.0, end_sec - max_duration)
+    duration = end_sec - start_sec
+    
+    if duration <= 0:
+        timestamps = [end_sec]
+    elif num_frames <= 1:
+        timestamps = [end_sec]
+    else:
+        # Quadratic proximity distribution: densely sample the final 10s before end_sec
+        timestamps = []
+        for i in range(num_frames):
+            ratio = i / (num_frames - 1)
+            t = end_sec - (((1.0 - ratio) ** 2.0) * duration)
+            timestamps.append(round(t, 2))
+            
+    keyframes_b64 = []
+    for ts in timestamps:
+        cmd = [
+            'ffmpeg', '-y',
+            '-ss', f"{ts:.2f}",
+            '-i', video_path,
+            '-vframes', '1',
+            '-vf', 'scale=480:-1',
+            '-q:v', '6',
+            '-f', 'image2',
+            '-'
+        ]
+        try:
+            res = subprocess.run(cmd, capture_output=True, timeout=10)
+            if res.returncode == 0 and res.stdout and len(res.stdout) > 100:
+                keyframes_b64.append(base64.b64encode(res.stdout).decode('utf-8'))
+            elif res.returncode != 0 and res.stderr:
+                log_msg(f"[FFmpeg Keyframe Error] ts={ts}s exit {res.returncode}: {res.stderr.decode('utf-8', errors='replace')[:200]}")
+        except Exception as e:
+            log_msg(f"[FFmpeg Keyframe Error] ts={ts}s: {e}")
+            
+    return keyframes_b64
 
 SEARCH_DIRS = [
     DATA_DIR,
-    r'c:\Anay\Miscellaneous',
-    r'c:\Anay',
-    os.path.expanduser(r'~\Downloads'),
-    os.path.expanduser(r'~\Videos'),
-    os.path.expanduser(r'~\Desktop'),
-    os.path.expanduser(r'~\Documents')
+    os.path.expanduser(os.path.join('~', 'Downloads')),
+    os.path.expanduser(os.path.join('~', 'Videos')),
+    os.path.expanduser(os.path.join('~', 'Desktop')),
+    os.path.expanduser(os.path.join('~', 'Documents'))
 ]
 
 VIDEO_EXTENSIONS = ('.mp4', '.mkv', '.avi', '.webm', '.mov', '.flv', '.m4v', '.ts')
@@ -78,7 +141,6 @@ def find_video_path(filename):
     base_name = os.path.splitext(clean_name)[0]
     
     # Extract episode code if present (e.g. s08e08, S08E01, etc.)
-    import re
     ep_match = re.search(r's\d+e\d+', base_name)
     ep_code = ep_match.group(0) if ep_match else None
 
@@ -116,12 +178,13 @@ class CineBuddyHandler(SimpleHTTPRequestHandler):
         # Server environment config endpoint
         if self.path == '/api/config':
             has_key = bool(os.environ.get('GEMINI_API_KEY') or os.environ.get('GOOGLE_API_KEY'))
+            has_ffmpeg = shutil.which('ffmpeg') is not None
             self.send_response(200)
             self.send_header('Content-Type', 'application/json')
             self.end_headers()
             self.wfile.write(json.dumps({
                 "hasApiKey": has_key,
-                "hasFfmpeg": True
+                "hasFfmpeg": has_ffmpeg
             }).encode('utf-8'))
             return
         
@@ -206,25 +269,51 @@ class CineBuddyHandler(SimpleHTTPRequestHandler):
             contents = req_body.get('contents', [])
             timestamp = req_body.get('timestamp')
             has_subtitles = req_body.get('hasSubtitles', False)
+            enable_vision = req_body.get('enableVision', True)
             
-            # If no subtitles or forced audio context, extract audio slice via FFmpeg if video is available
-            if ACTIVE_VIDEO_PATH and timestamp is not None and not has_subtitles:
-                audio_b64 = extract_audio_slice_b64(ACTIVE_VIDEO_PATH, timestamp)
-                if audio_b64 and len(contents) > 0:
-                    last_msg = contents[-1]
-                    if last_msg.get('role') == 'user':
-                        # Inject audio inlineData into Gemini request
-                        audio_part = {
+            # If video active, extract audio slice & visual keyframes via FFmpeg
+            if ACTIVE_VIDEO_PATH and timestamp is not None:
+                new_inline_parts = []
+                
+                # 1. Audio Slice Extraction
+                if not has_subtitles:
+                    log_msg(f"[Audio Extraction] Extracting audio slice up to {timestamp}s from '{os.path.basename(ACTIVE_VIDEO_PATH)}'")
+                    audio_b64 = extract_audio_slice_b64(ACTIVE_VIDEO_PATH, timestamp)
+                    if audio_b64:
+                        audio_kb = round(len(audio_b64) / 1024, 2)
+                        log_msg(f"[Audio Success] Extracted MP3 audio slice (~{audio_kb} KB Base64)")
+                        new_inline_parts.append({
                             "inlineData": {
-                                "mimeType": "audio/wav",
+                                "mimeType": "audio/mp3",
                                 "data": audio_b64
                             }
-                        }
-                        # Prepend audio part to user parts
-                        last_msg['parts'] = [audio_part] + [p for p in last_msg.get('parts', []) if 'inlineData' not in p]
+                        })
 
-            # Prepare Gemini request parameters
-            gemini_url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash:generateContent?key={api_key}"
+                # 2. Visual Keyframes Extraction
+                if enable_vision:
+                    num_frames = int(req_body.get('numFrames', 5))
+                    log_msg(f"[Vision Extraction] Extracting {num_frames} adaptive visual keyframes up to {timestamp}s...")
+                    keyframes = extract_visual_keyframes_b64(ACTIVE_VIDEO_PATH, timestamp, num_frames=num_frames)
+                    if keyframes:
+                        total_kf_kb = round(sum(len(k) for k in keyframes) / 1024, 2)
+                        log_msg(f"[Vision Success] Extracted {len(keyframes)} visual JPEG keyframes (~{total_kf_kb} KB total)")
+                        for kf in keyframes:
+                            new_inline_parts.append({
+                                "inlineData": {
+                                    "mimeType": "image/jpeg",
+                                    "data": kf
+                                }
+                            })
+
+                # Inject inline parts into last user message
+                if new_inline_parts and len(contents) > 0:
+                    last_msg = contents[-1]
+                    if last_msg.get('role') == 'user':
+                        text_parts = [p for p in last_msg.get('parts', []) if 'inlineData' not in p]
+                        last_msg['parts'] = new_inline_parts + text_parts
+
+            # Candidate models for fallback sequence (official v1beta endpoints)
+            MODELS = ["gemini-2.0-flash", "gemini-2.0-flash-lite", "gemini-flash-latest"]
             
             gemini_payload = {
                 "contents": contents,
@@ -235,56 +324,107 @@ class CineBuddyHandler(SimpleHTTPRequestHandler):
             
             # Filter None/empty values
             gemini_payload = {k: v for k, v in gemini_payload.items() if v is not None}
+            payload_bytes = json.dumps(gemini_payload).encode('utf-8')
+            log_msg(f"[API Request] Payload size: {round(len(payload_bytes)/1024, 2)} KB")
             
-            try:
-                # Issue direct POST call using urllib
-                req = urllib.request.Request(
-                    gemini_url,
-                    data=json.dumps(gemini_payload).encode('utf-8'),
-                    headers={'Content-Type': 'application/json'},
-                    method='POST'
-                )
-                with urllib.request.urlopen(req) as response:
-                    res_data = response.read()
-                    self.send_response(200)
-                    self.send_header('Content-Type', 'application/json')
-                    self.end_headers()
-                    self.wfile.write(res_data)
-            except urllib.error.HTTPError as e:
-                err_content = e.read().decode('utf-8')
-                self.send_response(e.code)
-                self.send_header('Content-Type', 'application/json')
-                self.end_headers()
-                self.wfile.write(err_content.encode('utf-8'))
-            except Exception as e:
-                self.send_response(500)
-                self.send_header('Content-Type', 'application/json')
-                self.end_headers()
-                self.wfile.write(json.dumps({"error": str(e)}).encode('utf-8'))
+            last_error_code = 500
+            last_error_content = None
+
+            for model_name in MODELS:
+                gemini_url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:generateContent?key={api_key}"
+                model_failed = False
+
+                for attempt in range(3):  # Retry up to 3 times per model
+                    try:
+                        log_msg(f"[API Call] Requesting model '{model_name}' (attempt {attempt + 1}/3)...")
+                        start_time = time.time()
+                        req = urllib.request.Request(
+                            gemini_url,
+                            data=payload_bytes,
+                            headers={'Content-Type': 'application/json'},
+                            method='POST'
+                        )
+                        with urllib.request.urlopen(req) as response:
+                            res_data = response.read()
+                            elapsed = round(time.time() - start_time, 2)
+                            log_msg(f"[API Success] Model '{model_name}' responded in {elapsed}s (HTTP 200)")
+                            self.send_response(200)
+                            self.send_header('Content-Type', 'application/json')
+                            self.end_headers()
+                            self.wfile.write(res_data)
+                            return
+                    except urllib.error.HTTPError as e:
+                        last_error_code = e.code
+                        last_error_content = e.read().decode('utf-8')
+                        
+                        # Immediate return if API Key itself is invalid
+                        if "API_KEY_INVALID" in last_error_content:
+                            log_msg(f"[API Error] Invalid Gemini API Key detected (HTTP {e.code})")
+                            self.send_response(e.code)
+                            self.send_header('Content-Type', 'application/json')
+                            self.end_headers()
+                            self.wfile.write(last_error_content.encode('utf-8'))
+                            return
+                        
+                        # 429 (Too Many Requests / Quota Exceeded) or 503 (Service Unavailable)
+                        if e.code in (429, 503):
+                            log_msg(f"[API Warning] Model '{model_name}' returned HTTP {e.code} (attempt {attempt + 1}/3)")
+                            if attempt < 2:
+                                backoff = (attempt + 1) * 2.0  # 2.0s, 4.0s backoff
+                                log_msg(f"[API Retry] Waiting {backoff}s backoff before retrying '{model_name}'...")
+                                time.sleep(backoff)
+                                continue
+                            else:
+                                log_msg(f"[API Fallback] Retries exhausted for '{model_name}'. Trying next fallback model...")
+                                model_failed = True
+                                break
+                        else:
+                            log_msg(f"[API Warning] Model '{model_name}' returned HTTP {e.code}. Trying next model...")
+                            model_failed = True
+                            break
+                    except Exception as e:
+                        log_msg(f"[API Exception] Model '{model_name}' failed with error: {e}")
+                        last_error_code = 500
+                        last_error_content = json.dumps({"error": str(e)})
+                        model_failed = True
+                        break
+
+                if model_failed:
+                    continue
+
+            # If all models & attempts failed
+            log_msg(f"[API Failure] All model fallbacks failed. Returning status HTTP {last_error_code}")
+            self.send_response(last_error_code)
+            self.send_header('Content-Type', 'application/json')
+            self.end_headers()
+            if last_error_content:
+                self.wfile.write(last_error_content.encode('utf-8'))
+            else:
+                self.wfile.write(json.dumps({"error": "All Gemini model endpoints failed. High demand or quota spike."}).encode('utf-8'))
         else:
             self.send_response(404)
             self.end_headers()
 
+
 def run(port=8000):
-    load_env()
-    server_address = ('', port)
+    server_address = ('127.0.0.1', port)
     
-    # Enable SO_REUSEADDR to avoid 'Address already in use' errors during fast restarts
-    class ReusableHTTPServer(HTTPServer):
+    # Enable SO_REUSEADDR and multi-threading to handle concurrent requests without blocking
+    class ReusableHTTPServer(ThreadingMixIn, HTTPServer):
+        daemon_threads = True
         def server_bind(self):
-            import socket
             self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
             super().server_bind()
 
     httpd = ReusableHTTPServer(server_address, CineBuddyHandler)
-    print("=================================================================")
-    print("CineBuddy: Interactive Video Companion Server Running")
-    print(f"Local Access URL: http://localhost:{port}/")
-    print("=================================================================")
+    log_msg("=================================================================")
+    log_msg("CineBuddy: Interactive Video Companion Server Running")
+    log_msg(f"Local Access URL: http://localhost:{port}/")
+    log_msg("=================================================================")
     try:
         httpd.serve_forever()
     except KeyboardInterrupt:
-        print("\nStopping server...")
+        log_msg("Stopping server...")
         httpd.server_close()
         sys.exit(0)
 
